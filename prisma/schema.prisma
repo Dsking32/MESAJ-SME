@@ -129,7 +129,7 @@ model WalletTransaction {
   type              TransactionType
   amount            Int // naira
   units             Int // SMS units equivalent, positive for topup, negative for spend
-  paymentReference  String?
+  paymentReference  String?         @unique
   createdByAdminId  String? // set when type = MANUAL_ADJUST
   createdAt         DateTime        @default(now())
 }

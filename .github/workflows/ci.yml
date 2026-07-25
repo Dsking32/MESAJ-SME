@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Placeholder env vars for build/typecheck only — no real secrets needed here.
+# `prisma generate` reads DATABASE_URL from prisma.config.ts but only to know
+# the shape of the connection, not to actually connect; a well-formed but
+# fake URL is enough. Real deploy secrets (Vercel, etc.) are separate from
+# this file and are never read from here.
+env:
+  DATABASE_URL: "postgresql://user:password@localhost:5432/ci_placeholder"
+  NEXT_PUBLIC_SUPABASE_URL: "https://ci-placeholder.supabase.co"
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: "ci-placeholder-anon-key"
+  NEXT_PUBLIC_APP_URL: "http://localhost:3000"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:coverage
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  # NOTE: a `prisma migrate diff --from-migrations` drift-check job was
+  # deliberately left out here. It would fail on every run right now: the
+  # committed baseline migration (prisma/migrations/00000000000000_baseline)
+  # is an empty placeholder, not a real snapshot — the actual tables were
+  # created via `prisma db push` against Supabase before migrations were
+  # adopted (see README's "Database" section). Diffing against an empty
+  # baseline would report the entire schema as drift on every PR.
+  #
+  # One-time fix, once there's real DB access:
+  #   npx prisma migrate diff \
+  #     --from-empty \
+  #     --to-url "$DATABASE_URL" \
+  #     --script > prisma/migrations/00000000000000_baseline/migration.sql
+  # That captures the actual current schema as the real baseline. After
+  # that, this migration-check job can be safely added back — every
+  # migration from this point forward (like the paymentReference unique
+  # constraint added in this change) is already a real, generated migration,
+  # so the check will be accurate for anything committed after the baseline
+  # is fixed.

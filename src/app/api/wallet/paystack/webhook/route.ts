@@ -4,6 +4,23 @@ import { prisma } from "@/lib/prisma";
 import { PRICE_PER_SMS } from "@/lib/pricing";
 
 /**
+ * True for a Prisma unique-constraint violation (error code P2002).
+ * Duck-typed on `.code` rather than `instanceof Prisma.PrismaClientKnownRequestError`
+ * so this check doesn't need the real `Prisma` runtime export — P2002 is a
+ * stable, documented Prisma error code, so this is safe and one less
+ * runtime dependency for a single-purpose check.
+ * https://www.prisma.io/docs/orm/reference/error-reference#p2002
+ */
+function isUniqueConstraintViolation(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    "code" in err &&
+    (err as { code: unknown }).code === "P2002"
+  );
+}
+
+/**
  * POST /api/wallet/paystack/webhook
  *
  * Paystack calls this on payment events. We verify the signature, then on
@@ -45,12 +62,15 @@ export async function POST(req: NextRequest) {
     const amountNaira = amount / 100;
 
     if (tenantId) {
-      // Idempotency guard: skip if we've already recorded this reference.
-      const existing = await prisma.walletTransaction.findFirst({
-        where: { paymentReference: reference },
-      });
-
-      if (!existing) {
+      // Idempotency guard: `paymentReference` has a DB-level unique
+      // constraint (see prisma/migrations/..._wallet_transaction_payment_
+      // reference_unique). We no longer check-then-insert — a findFirst
+      // followed by a create has a race window where two concurrent
+      // deliveries for the same reference (Paystack does redeliver) could
+      // both pass the check before either insert committed, double-crediting
+      // the wallet. Instead we just attempt the credit + insert together,
+      // and let the unique constraint reject the second one atomically.
+      try {
         await prisma.$transaction([
           prisma.tenant.update({
             where: { id: tenantId },
@@ -66,6 +86,16 @@ export async function POST(req: NextRequest) {
             },
           }),
         ]);
+      } catch (err) {
+        // P2002 = unique constraint violation on paymentReference, i.e. this
+        // exact charge was already credited by an earlier delivery of the
+        // same event. Both statements in the $transaction roll back
+        // together, so the wallet increment above never applies on a
+        // duplicate — nothing further to undo here. Any other error should
+        // still surface (Paystack will retry on a non-2xx response).
+        if (!isUniqueConstraintViolation(err)) {
+          throw err;
+        }
       }
     }
   }
