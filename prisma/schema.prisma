@@ -1,0 +1,248 @@
+// Mesaj SME v2 — Prisma schema
+// Matches Section 10 of the development guide.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  CLIENT
+  ADMIN
+}
+
+enum Carrier {
+  MTN
+  AIRTEL
+  GLO
+  MOBILE9
+}
+
+enum SenderIdStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum CampaignStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  SENT
+  /// Every carrier batch failed — nothing actually reached a recipient,
+  /// distinct from SENT (which now only means at least one message went
+  /// out; see CampaignCarrierBatch.mesajResponseStatus for the per-carrier
+  /// breakdown, including PARTIAL sends that still count as SENT overall).
+  FAILED
+}
+
+enum TransactionType {
+  TOPUP
+  SPEND
+  MANUAL_ADJUST
+  REFUND
+}
+
+enum MesajBatchStatus {
+  PENDING
+  SUCCESS
+  /// Some chunks of this carrier batch sent successfully and some failed
+  /// (see lib/mesajClient.ts chunking) — distinct from FAILED so an admin
+  /// reviewing history doesn't mistake "90% delivered" for "nothing sent"
+  /// and trigger a duplicate re-send to recipients who already got it.
+  PARTIAL
+  FAILED
+}
+
+/// A registered user — either a client (SME) contact or an internal admin.
+/// The Supabase auth user id is stored in `authUserId` and is the source of truth
+/// for login; this table holds app-level profile/role data.
+model User {
+  id         String   @id @default(cuid())
+  authUserId String   @unique
+  email      String   @unique
+  phone      String?
+  role       Role     @default(CLIENT)
+  tenantId   String?
+  tenant     Tenant?  @relation(fields: [tenantId], references: [id])
+  createdAt  DateTime @default(now())
+
+  reviewedCampaigns Campaign[] @relation("ReviewedBy")
+  auditLogEntries   AdminAuditLog[]
+}
+
+/// One SME business = one tenant. All client-facing data is scoped to a tenant.
+model Tenant {
+  id             String   @id @default(cuid())
+  businessName   String
+  cacNumber      String
+  sector         String
+  contactEmail   String
+  contactPhone   String
+  walletBalance  Int      @default(0) // stored in naira, whole units
+  createdAt      DateTime @default(now())
+
+  users               User[]
+  senderIds           SenderId[]
+  walletTransactions  WalletTransaction[]
+  contactLists        ContactList[]
+  savedMessages       SavedMessage[]
+  campaigns           Campaign[]
+}
+
+/// A requested Sender ID for a tenant. Approval is tracked per-carrier via
+/// SenderIdCarrierStatus, since MTN/Airtel/Glo/9mobile approve independently
+/// and may assign slightly different shortCode strings.
+model SenderId {
+  id            String   @id @default(cuid())
+  tenantId      String
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  requestedName String
+  createdAt     DateTime @default(now())
+
+  carrierStatuses SenderIdCarrierStatus[]
+  campaigns       Campaign[]
+}
+
+/// Per-carrier approval status + the exact approved shortCode string,
+/// since e.g. MTN might approve "VNGI" while Glo approves "VNGIS".
+model SenderIdCarrierStatus {
+  id               String         @id @default(cuid())
+  senderIdId       String
+  senderId         SenderId       @relation(fields: [senderIdId], references: [id])
+  carrier          Carrier
+  status           SenderIdStatus @default(PENDING)
+  approvedShortcode String?
+  updatedAt        DateTime       @updatedAt
+
+  @@unique([senderIdId, carrier])
+}
+
+model WalletTransaction {
+  id                String          @id @default(cuid())
+  tenantId          String
+  tenant            Tenant          @relation(fields: [tenantId], references: [id])
+  type              TransactionType
+  amount            Int // naira
+  units             Int // SMS units equivalent, positive for topup, negative for spend
+  paymentReference  String?
+  createdByAdminId  String? // set when type = MANUAL_ADJUST
+  createdAt         DateTime        @default(now())
+}
+
+model ContactList {
+  id        String    @id @default(cuid())
+  tenantId  String
+  tenant    Tenant    @relation(fields: [tenantId], references: [id])
+  name      String
+  createdAt DateTime  @default(now())
+
+  contacts Contact[]
+}
+
+model Contact {
+  id            String      @id @default(cuid())
+  contactListId String
+  contactList   ContactList @relation(fields: [contactListId], references: [id])
+  phoneNumber   String // stored normalized, 234 international format
+  carrier       Carrier?
+  createdAt     DateTime    @default(now())
+}
+
+model SavedMessage {
+  id        String   @id @default(cuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  body      String
+  createdAt DateTime @default(now())
+}
+
+model Campaign {
+  id               String         @id @default(cuid())
+  tenantId         String
+  tenant           Tenant         @relation(fields: [tenantId], references: [id])
+  senderIdId       String
+  senderId         SenderId       @relation(fields: [senderIdId], references: [id])
+  messageBody      String
+  recipientCount   Int
+  invalidCount     Int            @default(0)
+  /// JSON-encoded map of carrier -> validated, normalized recipient numbers,
+  /// e.g. {"MTN":["234803..."],"AIRTEL":[],"GLO":[...],"MOBILE9":[]}.
+  /// Captured at submit time so approval/send doesn't need to re-run
+  /// validation against a list the client could have changed since.
+  validatedNumbersJson String
+  status           CampaignStatus @default(DRAFT)
+  rejectionReason  String?
+  reviewedByAdminId String?
+  reviewedByAdmin  User?          @relation("ReviewedBy", fields: [reviewedByAdminId], references: [id])
+  createdAt        DateTime       @default(now())
+  approvedAt       DateTime?
+
+  carrierBatches CampaignCarrierBatch[]
+}
+
+/// A campaign is split into one send request per carrier (Mesaj's API takes
+/// one shortCode per request). Each batch is tracked independently.
+model CampaignCarrierBatch {
+  id                 String            @id @default(cuid())
+  campaignId         String
+  campaign           Campaign          @relation(fields: [campaignId], references: [id])
+  carrier            Carrier
+  shortcodeUsed      String
+  recipientCount     Int
+  mesajResponseStatus MesajBatchStatus @default(PENDING)
+  mesajResponseRaw   String? // raw JSON response, for debugging/reconciliation
+  sentAt             DateTime?
+  createdAt          DateTime          @default(now())
+}
+
+/// Manual correction for a number whose real carrier doesn't match its
+/// prefix-based guess — almost always because it was ported (Nigerian
+/// numbers keep their prefix across carrier switches, so prefix-only
+/// detection can't catch this on its own; see lib/numbers.ts).
+///
+/// This does NOT solve automatic portability detection — that needs a paid
+/// MNP/HLR lookup service, which isn't integrated. What it does: once a
+/// delivery failure or client report reveals a number's real carrier,
+/// recording it here means every future campaign routes that number
+/// correctly instead of repeating the same wrong guess indefinitely.
+model PortedNumberOverride {
+  id               String   @id @default(cuid())
+  normalizedNumber String   @unique // 234XXXXXXXXXX
+  carrier          Carrier // the CORRECT carrier, overriding the prefix guess
+  source           String   @default("manual") // "manual" today; "mnp_lookup" if that's ever integrated
+  notedByAdminId   String?
+  notes            String?
+  createdAt        DateTime @default(now())
+}
+
+/// Fixed-window counter for lib/rateLimit.ts. `key` is caller-defined
+/// (e.g. "campaign-submit:user_abc123") and `windowStart` is the start of
+/// the current fixed window for that key, so concurrent requests in the
+/// same window race-safely increment the same row via upsert instead of a
+/// read-then-write. Rows outside the window are opportunistically pruned
+/// by the limiter itself — see lib/rateLimit.ts — so this table doesn't
+/// need a cron job to stay small.
+model RateLimitHit {
+  key         String
+  windowStart DateTime
+  count       Int      @default(1)
+  createdAt   DateTime @default(now())
+
+  @@id([key, windowStart])
+}
+
+model AdminAuditLog {
+  id         String   @id @default(cuid())
+  adminId    String
+  admin      User     @relation(fields: [adminId], references: [id])
+  actionType String // e.g. "SENDER_ID_STATUS_UPDATE", "CAMPAIGN_APPROVE", "WALLET_ADJUST"
+  targetType String // e.g. "SenderId", "Campaign", "Tenant"
+  targetId   String
+  notes      String?
+  createdAt  DateTime @default(now())
+}

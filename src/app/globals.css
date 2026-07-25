@@ -1,0 +1,148 @@
+@import "tailwindcss";
+
+:root {
+  /* Warm paper neutrals — not stock Tailwind slate/gray */
+  --color-canvas: #f7f6f2;
+  --color-surface: #ffffff;
+  --color-surface-raised: #ffffff;
+
+  --color-ink-900: #14171a;
+  --color-ink-700: #33383d;
+  --color-ink-500: #62686e;
+  --color-ink-400: #868c92;
+  --color-ink-300: #b3b8bc;
+  --color-ink-200: #dcdcd6;
+  --color-ink-100: #eceae4;
+  --color-ink-50: #f3f2ee;
+
+  --color-border: #e3e1da;
+  --color-border-strong: #cbc9c0;
+
+  /* Signal green — deeper & more considered than emerald-500 */
+  --color-brand-700: #064e3f;
+  --color-brand-600: #0b6e4f;
+  --color-brand-500: #147a56;
+  --color-brand-100: #e3f2e9;
+  --color-brand-50: #f1f8f4;
+
+  --color-amber-700: #92400e;
+  --color-amber-600: #b45309;
+  --color-amber-100: #fdf1de;
+  --color-amber-50: #fdf7ee;
+
+  --color-red-700: #9f1c14;
+  --color-red-600: #c0301f;
+  --color-red-100: #fbe7e4;
+  --color-red-50: #fdf3f2;
+
+  --color-blue-700: #1d4ed8;
+  --color-blue-600: #2563eb;
+  --color-blue-100: #e3ebfd;
+  --color-blue-50: #eff4fe;
+
+  /* Admin console — inverted, ops/moderation register */
+  --color-admin-bg: #101314;
+  --color-admin-surface: #191d1f;
+  --color-admin-surface-raised: #1f2426;
+  --color-admin-border: #2b3134;
+
+  --shadow-xs: 0 1px 2px 0 rgb(20 23 26 / 0.04);
+  --shadow-sm: 0 1px 2px -1px rgb(20 23 26 / 0.08), 0 1px 3px 0 rgb(20 23 26 / 0.06);
+  --shadow-md: 0 4px 10px -4px rgb(20 23 26 / 0.12), 0 2px 4px -2px rgb(20 23 26 / 0.06);
+  --shadow-lg: 0 12px 24px -8px rgb(20 23 26 / 0.16), 0 4px 8px -4px rgb(20 23 26 / 0.08);
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+}
+
+@theme inline {
+  --color-canvas: var(--color-canvas);
+  --color-surface: var(--color-surface);
+  --color-ink-900: var(--color-ink-900);
+  --color-ink-700: var(--color-ink-700);
+  --color-ink-500: var(--color-ink-500);
+  --color-ink-400: var(--color-ink-400);
+  --color-ink-300: var(--color-ink-300);
+  --color-ink-200: var(--color-ink-200);
+  --color-ink-100: var(--color-ink-100);
+  --color-ink-50: var(--color-ink-50);
+  --color-border: var(--color-border);
+  --color-brand-700: var(--color-brand-700);
+  --color-brand-600: var(--color-brand-600);
+  --color-brand-500: var(--color-brand-500);
+  --color-brand-100: var(--color-brand-100);
+  --color-brand-50: var(--color-brand-50);
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink-900);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--color-brand-100);
+  color: var(--color-brand-700);
+}
+
+/* Consistent, visible keyboard focus everywhere — never suppressed */
+:focus-visible {
+  outline: 2px solid var(--color-brand-600);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Slim, quiet scrollbars for the app shell */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-ink-200) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-ink-200);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.25s ease-out;
+}
