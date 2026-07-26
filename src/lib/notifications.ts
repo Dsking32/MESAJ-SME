@@ -101,3 +101,57 @@ export async function notifyCampaignRejected(params: {
     `),
   });
 }
+
+/**
+ * Sent when admin approves a campaign and it's actually sent to Mesaj (see
+ * /api/admin/campaigns/approve). Covers three distinct outcomes so the
+ * client never has to check the dashboard to find out what happened to
+ * money they've already been charged for:
+ *  - Fully sent: every recipient across every approved carrier went out.
+ *  - Partially sent: some carrier batch(es) failed — totalSent > 0 but
+ *    less than recipientCount. The difference was already refunded by the
+ *    approve route before this fires.
+ *  - Fully failed: every carrier batch failed (totalSent === 0). Same
+ *    refund-already-happened note applies.
+ */
+export async function notifyCampaignSent(params: {
+  to: string;
+  businessName: string;
+  messageBody: string;
+  recipientCount: number;
+  totalSent: number;
+  refundedAmount: number;
+}) {
+  const { to, businessName, messageBody, recipientCount, totalSent, refundedAmount } = params;
+  const preview = messageBody.length > 100 ? `${messageBody.slice(0, 100)}…` : messageBody;
+
+  const fullyFailed = totalSent === 0;
+  const partiallyFailed = !fullyFailed && totalSent < recipientCount;
+
+  const subject = fullyFailed
+    ? "Your campaign failed to send"
+    : partiallyFailed
+      ? "Your campaign was partially sent"
+      : "Your campaign has been sent";
+
+  const statusParagraph = fullyFailed
+    ? `<p>Your campaign "${escapeHtml(preview)}" was approved, but every carrier it was submitted to failed to deliver it. No messages went out.</p>`
+    : partiallyFailed
+      ? `<p>Your campaign "${escapeHtml(preview)}" was approved and sent — <strong>${totalSent}</strong> of ${recipientCount} recipients received it. The rest failed at the carrier level.</p>`
+      : `<p>Your campaign "${escapeHtml(preview)}" was approved and sent to all <strong>${recipientCount}</strong> recipients.</p>`;
+
+  const refundParagraph =
+    refundedAmount > 0
+      ? `<p>You were only charged for the messages that actually sent — ₦${refundedAmount.toLocaleString("en-NG")} for the rest has already been refunded to your wallet.</p>`
+      : "";
+
+  return sendEmail({
+    to,
+    subject,
+    html: wrapHtml(`
+      <p>Hi ${escapeHtml(businessName)},</p>
+      ${statusParagraph}
+      ${refundParagraph}
+    `),
+  });
+}

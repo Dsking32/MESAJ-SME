@@ -63,22 +63,77 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-  # NOTE: a `prisma migrate diff --from-migrations` drift-check job was
-  # deliberately left out here. It would fail on every run right now: the
-  # committed baseline migration (prisma/migrations/00000000000000_baseline)
-  # is an empty placeholder, not a real snapshot — the actual tables were
-  # created via `prisma db push` against Supabase before migrations were
-  # adopted (see README's "Database" section). Diffing against an empty
-  # baseline would report the entire schema as drift on every PR.
-  #
-  # One-time fix, once there's real DB access:
-  #   npx prisma migrate diff \
-  #     --from-empty \
-  #     --to-url "$DATABASE_URL" \
-  #     --script > prisma/migrations/00000000000000_baseline/migration.sql
-  # That captures the actual current schema as the real baseline. After
-  # that, this migration-check job can be safely added back — every
-  # migration from this point forward (like the paymentReference unique
-  # constraint added in this change) is already a real, generated migration,
-  # so the check will be accurate for anything committed after the baseline
-  # is fixed.
+  # Runs against a REAL Postgres, with real migrations applied and the real
+  # generated Prisma client — no mocks. This is what actually proves things
+  # like "two concurrent webhook deliveries can't double-credit a wallet"
+  # or "the rate limiter holds under real concurrency" — a mocked unit test
+  # can only prove the code *calls* the right function, never that the
+  # database *enforces* the guarantee.
+  integration-test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci_integration
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci_integration"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Apply real migrations to the test database
+        run: npx prisma migrate deploy
+      - run: npm run test:integration
+
+  # Fails the build if schema.prisma has changes not captured by a real
+  # migration file — e.g. someone edited the schema and forgot to run
+  # `prisma migrate dev`. Safe to run now: the baseline migration is a real
+  # snapshot of production (fixed as part of adopting this CI), not the
+  # empty placeholder it started as.
+  migration-check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci_shadow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma validate
+      - name: Check for schema drift not captured by a migration
+        env:
+          SHADOW_DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci_shadow"
+        run: |
+          npx prisma migrate diff \
+            --from-migrations ./prisma/migrations \
+            --to-schema-datamodel ./prisma/schema.prisma \
+            --shadow-database-url "$SHADOW_DATABASE_URL" \
+            --exit-code || \
+          (echo "::error::schema.prisma has changes not captured in prisma/migrations — run 'npx prisma migrate dev' and commit the result." && exit 1)

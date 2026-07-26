@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
+import * as Sentry from "@sentry/nextjs";
 import { prisma } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
 import { sendCampaignAcrossCarriers, type CarrierBatchInput, batchStatusFromResult } from "@/lib/mesajClient";
 import type { Carrier } from "@/lib/numbers";
 import { PRICE_PER_SMS } from "@/lib/pricing";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rateLimit";
+import { notifyCampaignSent } from "@/lib/notifications";
 
 /**
  * POST /api/admin/campaigns/approve
@@ -125,6 +127,24 @@ export async function POST(req: NextRequest) {
     data: { status: totalSent > 0 ? "SENT" : "FAILED" },
   });
 
+  if (totalSent === 0) {
+    // Every carrier batch failed — nothing reached a recipient despite the
+    // campaign being approved with valid, previously-validated numbers.
+    // This usually means Mesaj itself is down/erroring, not a one-off bad
+    // number, and it's worth someone finding out immediately rather than
+    // only when a client complains their campaign never arrived.
+    Sentry.captureMessage("Campaign fully failed to send — every carrier batch failed", {
+      level: "error",
+      extra: {
+        campaignId: campaign.id,
+        tenantId: campaign.tenantId,
+        carriersAttempted: batches.map((b) => b.carrier),
+        recipientCount: campaign.recipientCount,
+        sendResults: sendResults.map((r) => ({ carrier: r.carrier, error: r.result.error })),
+      },
+    });
+  }
+
   // Funds for this campaign were already reserved (deducted) at submit time,
   // based on recipientCount. Now that we know how many actually sent
   // successfully, refund the difference if any carrier batch failed.
@@ -146,6 +166,15 @@ export async function POST(req: NextRequest) {
       },
     });
   }
+
+  await notifyCampaignSent({
+    to: campaign.tenant.contactEmail,
+    businessName: campaign.tenant.businessName,
+    messageBody: campaign.messageBody,
+    recipientCount: campaign.recipientCount,
+    totalSent,
+    refundedAmount: refund > 0 ? refund : 0,
+  });
 
   await prisma.adminAuditLog.create({
     data: {

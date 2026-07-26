@@ -12,6 +12,8 @@
  * the return value as informational, not something to throw on.
  */
 
+import * as Sentry from "@sentry/nextjs";
+
 const RESEND_API_URL = "https://api.resend.com/emails";
 const REQUEST_TIMEOUT_MS = 8_000;
 
@@ -61,8 +63,11 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
     if (!response.ok) {
       const body = await response.text().catch(() => "");
       const error = `Resend API returned ${response.status}${body ? `: ${body}` : ""}`;
-      // eslint-disable-next-line no-console
       console.error(`[email] ${error}`);
+      Sentry.captureMessage("Transactional email failed to send", {
+        level: "warning",
+        extra: { to: params.to, subject: params.subject, error },
+      });
       return { success: false, error };
     }
 
@@ -74,8 +79,11 @@ export async function sendEmail(params: SendEmailParams): Promise<SendEmailResul
       : err instanceof Error
         ? err.message
         : "Unknown error sending email";
-    // eslint-disable-next-line no-console
     console.error(`[email] ${error}`);
+    Sentry.captureMessage("Transactional email failed to send", {
+      level: "warning",
+      extra: { to: params.to, subject: params.subject, error },
+    });
     return { success: false, error };
   } finally {
     clearTimeout(timeoutId);

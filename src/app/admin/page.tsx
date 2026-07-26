@@ -2,11 +2,17 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
-import { ArrowRight, ClipboardCheck, Users, Wallet, BadgeCheck, UserCog } from "lucide-react";
+import { ArrowRight, ClipboardCheck, Users, Wallet, BadgeCheck, UserCog, BarChart3 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatCard } from "@/components/ui/StatCard";
 
 const SECTIONS = [
+  {
+    href: "/admin/stats",
+    title: "Stats",
+    description: "Revenue, send volume, carrier failure rate, and tenant activity.",
+    icon: BarChart3,
+  },
   {
     href: "/admin/clients",
     title: "Clients",
