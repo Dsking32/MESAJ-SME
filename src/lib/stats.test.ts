@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("./prisma", () => ({
@@ -15,11 +16,12 @@ import { prisma } from "./prisma";
 const mockedPrisma = vi.mocked(prisma, { deep: true });
 
 function setupDefaults() {
-  mockedPrisma.walletTransaction.aggregate.mockImplementation(async ({ where }: never) => {
-    if (where?.type === "SPEND") return { _sum: { amount: 500_000 } } as never;
-    if (where?.type === "REFUND") return { _sum: { amount: 20_000 } } as never;
-    if (where?.type === "TOPUP") return { _sum: { amount: 1_000_000 } } as never;
-    return { _sum: { amount: 0 } } as never;
+  const aggregateMock = mockedPrisma.walletTransaction.aggregate.mockImplementation as any;
+  aggregateMock(async ({ where }: any) => {
+    if (where?.type === "SPEND") return { _sum: { amount: 500_000 } };
+    if (where?.type === "REFUND") return { _sum: { amount: 20_000 } };
+    if (where?.type === "TOPUP") return { _sum: { amount: 1_000_000 } };
+    return { _sum: { amount: 0 } };
   });
   mockedPrisma.tenant.aggregate.mockResolvedValue({ _sum: { walletBalance: 300_000 } } as never);
   mockedPrisma.campaign.groupBy.mockResolvedValue([
