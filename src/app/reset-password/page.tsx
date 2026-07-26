@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import Link from "next/link";
 import { Button } from "@/components/ui/Button";
@@ -10,27 +10,41 @@ import { Alert } from "@/components/ui/Alert";
 
 const MIN_PASSWORD_LENGTH = 8;
 
-export default function ResetPasswordPage() {
+function ResetPasswordForm() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
-  // The recovery link Supabase emails lands here with the tokens in the URL
-  // hash; the browser client (detectSessionInUrl, on by default) parses
-  // that automatically and establishes a session — but that parsing
-  // happens asynchronously on mount, so the form is disabled until it's
-  // confirmed a session actually exists. Without this check, submitting
-  // before the session is ready fails with a confusing "Auth session
-  // missing" error instead of a clear message.
+  // Supabase's recovery link arrives one of two ways depending on project
+  // config: the newer PKCE flow sends a `?code=...` query param that must
+  // be explicitly exchanged for a session (exchangeCodeForSession) — the
+  // browser client does NOT do this automatically. Older projects instead
+  // send `#access_token=...&type=recovery` in the hash, which the browser
+  // client DOES parse automatically (detectSessionInUrl). This checks for
+  // the code param first, then falls back to an already-established
+  // session for the hash-based flow.
   const [sessionReady, setSessionReady] = useState<"checking" | "ready" | "missing">("checking");
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   useEffect(() => {
     const supabase = createClient();
-    supabase.auth.getSession().then(({ data }) => {
+    const code = searchParams.get("code");
+
+    async function establishSession() {
+      if (code) {
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
+        setSessionReady(error ? "missing" : "ready");
+        return;
+      }
+      // No code param — check if the hash-based flow already set a session.
+      const { data } = await supabase.auth.getSession();
       setSessionReady(data.session ? "ready" : "missing");
-    });
+    }
+
+    establishSession();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {
@@ -131,5 +145,14 @@ export default function ResetPasswordPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function ResetPasswordPage() {
+  // useSearchParams requires a Suspense boundary in the app router.
+  return (
+    <Suspense fallback={null}>
+      <ResetPasswordForm />
+    </Suspense>
   );
 }
