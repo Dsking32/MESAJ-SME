@@ -80,6 +80,7 @@ $$;
 -- policy — role changes go through /api/admin/users/[id]/role via Prisma.
 ALTER TABLE "User" ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS user_self_or_admin ON "User";
 CREATE POLICY user_self_or_admin ON "User"
   FOR SELECT
   USING ("authUserId" = auth.uid()::text OR app_is_admin());
@@ -87,33 +88,40 @@ CREATE POLICY user_self_or_admin ON "User"
 -- === Tenant ==================================================================
 ALTER TABLE "Tenant" ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS tenant_self_or_admin ON "Tenant";
 CREATE POLICY tenant_self_or_admin ON "Tenant"
   FOR SELECT
   USING (id = app_current_tenant_id() OR app_is_admin());
 
 -- === Directly tenant-scoped tables (own tenantId column) ===================
 ALTER TABLE "SenderId" ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS senderid_tenant_or_admin ON "SenderId";
 CREATE POLICY senderid_tenant_or_admin ON "SenderId"
   FOR SELECT USING ("tenantId" = app_current_tenant_id() OR app_is_admin());
 
 ALTER TABLE "WalletTransaction" ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS wallettxn_tenant_or_admin ON "WalletTransaction";
 CREATE POLICY wallettxn_tenant_or_admin ON "WalletTransaction"
   FOR SELECT USING ("tenantId" = app_current_tenant_id() OR app_is_admin());
 
 ALTER TABLE "ContactList" ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS contactlist_tenant_or_admin ON "ContactList";
 CREATE POLICY contactlist_tenant_or_admin ON "ContactList"
   FOR SELECT USING ("tenantId" = app_current_tenant_id() OR app_is_admin());
 
 ALTER TABLE "SavedMessage" ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS savedmessage_tenant_or_admin ON "SavedMessage";
 CREATE POLICY savedmessage_tenant_or_admin ON "SavedMessage"
   FOR SELECT USING ("tenantId" = app_current_tenant_id() OR app_is_admin());
 
 ALTER TABLE "Campaign" ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS campaign_tenant_or_admin ON "Campaign";
 CREATE POLICY campaign_tenant_or_admin ON "Campaign"
   FOR SELECT USING ("tenantId" = app_current_tenant_id() OR app_is_admin());
 
 -- === Tables scoped via a parent join (no tenantId column of their own) ====
 ALTER TABLE "Contact" ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS contact_tenant_or_admin ON "Contact";
 CREATE POLICY contact_tenant_or_admin ON "Contact"
   FOR SELECT USING (
     app_is_admin() OR EXISTS (
@@ -123,6 +131,7 @@ CREATE POLICY contact_tenant_or_admin ON "Contact"
   );
 
 ALTER TABLE "SenderIdCarrierStatus" ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS sender_id_carrier_status_tenant_or_admin ON "SenderIdCarrierStatus";
 CREATE POLICY sender_id_carrier_status_tenant_or_admin ON "SenderIdCarrierStatus"
   FOR SELECT USING (
     app_is_admin() OR EXISTS (
@@ -132,6 +141,7 @@ CREATE POLICY sender_id_carrier_status_tenant_or_admin ON "SenderIdCarrierStatus
   );
 
 ALTER TABLE "CampaignCarrierBatch" ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS campaign_carrier_batch_tenant_or_admin ON "CampaignCarrierBatch";
 CREATE POLICY campaign_carrier_batch_tenant_or_admin ON "CampaignCarrierBatch"
   FOR SELECT USING (
     app_is_admin() OR EXISTS (
