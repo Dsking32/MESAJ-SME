@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as Sentry from "@sentry/nextjs";
 import { prisma } from "@/lib/prisma";
-import { createClient } from "@/lib/supabase/server";
+import { requireAdminApi } from "@/lib/adminAuth";
 import { sendCampaignAcrossCarriers, type CarrierBatchInput, batchStatusFromResult } from "@/lib/mesajClient";
 import type { Carrier } from "@/lib/numbers";
 import { PRICE_PER_SMS } from "@/lib/pricing";
@@ -22,18 +22,9 @@ import { notifyCampaignSent } from "@/lib/notifications";
  *  6. Logs the approval in the admin audit log
  */
 export async function POST(req: NextRequest) {
-  const supabase = await createClient();
-  const {
-    data: { user: authUser },
-  } = await supabase.auth.getUser();
-
-  const admin = authUser
-    ? await prisma.user.findUnique({ where: { authUserId: authUser.id } })
-    : null;
-
-  if (!admin || admin.role !== "ADMIN") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
+  const auth = await requireAdminApi();
+  if (!auth.ok) return auth.response;
+  const { admin } = auth;
 
   const rl = await checkRateLimit(
     `admin-campaign-approve:${admin.id}`,

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
-import { createClient } from "@/lib/supabase/server";
+import { requireAdminApi } from "@/lib/adminAuth";
 import { computeOpsStats } from "@/lib/stats";
 
 /**
@@ -11,16 +10,8 @@ import { computeOpsStats } from "@/lib/stats";
  * duplicating the aggregation logic.
  */
 export async function GET() {
-  const supabase = await createClient();
-  const {
-    data: { user: authUser },
-  } = await supabase.auth.getUser();
-
-  const admin = authUser ? await prisma.user.findUnique({ where: { authUserId: authUser.id } }) : null;
-
-  if (!admin || admin.role !== "ADMIN") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
+  const auth = await requireAdminApi();
+  if (!auth.ok) return auth.response;
 
   const stats = await computeOpsStats();
   return NextResponse.json(stats);

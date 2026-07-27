@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { createClient } from "@/lib/supabase/server";
+import { requireAdminApi } from "@/lib/adminAuth";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rateLimit";
 
 const VALID_ROLES = ["CLIENT", "ADMIN"] as const;
@@ -24,18 +24,9 @@ const VALID_ROLES = ["CLIENT", "ADMIN"] as const;
  *    feature exists to close.
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const supabase = await createClient();
-  const {
-    data: { user: authUser },
-  } = await supabase.auth.getUser();
-
-  const admin = authUser
-    ? await prisma.user.findUnique({ where: { authUserId: authUser.id } })
-    : null;
-
-  if (!admin || admin.role !== "ADMIN") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
+  const auth = await requireAdminApi();
+  if (!auth.ok) return auth.response;
+  const { admin } = auth;
 
   const rl = await checkRateLimit(
     `admin-user-role:${admin.id}`,

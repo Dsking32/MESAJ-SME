@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
-import { createClient } from "@/lib/supabase/server";
-import { redirect } from "next/navigation";
+import { requireAdminPage } from "@/lib/adminAuth";
 import { ArrowRight, ClipboardCheck, Users, Wallet, BadgeCheck, UserCog, BarChart3 } from "lucide-react";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatCard } from "@/components/ui/StatCard";
@@ -40,14 +39,7 @@ const SECTIONS = [
 ];
 
 export default async function AdminHomePage() {
-  const supabase = await createClient();
-  const {
-    data: { user: authUser },
-  } = await supabase.auth.getUser();
-  if (!authUser) redirect("/login");
-
-  const admin = await prisma.user.findUnique({ where: { authUserId: authUser.id } });
-  if (!admin || admin.role !== "ADMIN") redirect("/dashboard");
+  const { authUser } = await requireAdminPage();
 
   const [pendingCampaigns, pendingSenderIdCarriers, tenantCount, totalWalletBalance] =
     await Promise.all([

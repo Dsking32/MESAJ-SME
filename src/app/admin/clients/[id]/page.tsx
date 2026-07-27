@@ -1,20 +1,13 @@
 import { prisma } from "@/lib/prisma";
-import { createClient } from "@/lib/supabase/server";
-import { redirect, notFound } from "next/navigation";
+import { requireAdminPage } from "@/lib/adminAuth";
+import { notFound } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import ClientDetail from "./ClientDetail";
 import { formatDate } from "@/lib/formatDate";
 
 export default async function AdminClientDetailPage({ params }: { params: Promise<{ id: string }> }) {
-  const supabase = await createClient();
-  const {
-    data: { user: authUser },
-  } = await supabase.auth.getUser();
-  if (!authUser) redirect("/login");
-
-  const admin = await prisma.user.findUnique({ where: { authUserId: authUser.id } });
-  if (!admin || admin.role !== "ADMIN") redirect("/dashboard");
+  await requireAdminPage();
 
   const { id } = await params;
 

@@ -1,6 +1,4 @@
-import { prisma } from "@/lib/prisma";
-import { createClient } from "@/lib/supabase/server";
-import { redirect } from "next/navigation";
+import { requireAdminPage } from "@/lib/adminAuth";
 import { computeOpsStats } from "@/lib/stats";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { StatCard } from "@/components/ui/StatCard";
@@ -15,14 +13,7 @@ function percent(fraction: number): string {
 }
 
 export default async function AdminStatsPage() {
-  const supabase = await createClient();
-  const {
-    data: { user: authUser },
-  } = await supabase.auth.getUser();
-  if (!authUser) redirect("/login");
-
-  const admin = await prisma.user.findUnique({ where: { authUserId: authUser.id } });
-  if (!admin || admin.role !== "ADMIN") redirect("/dashboard");
+  await requireAdminPage();
 
   const stats = await computeOpsStats();
 

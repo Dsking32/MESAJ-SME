@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { createClient } from "@/lib/supabase/server";
-import { redirect } from "next/navigation";
+import { requireAdminPage } from "@/lib/adminAuth";
 import { parsePageParam, totalPages as computeTotalPages, DEFAULT_PAGE_SIZE } from "@/lib/pagination";
 import Pager from "@/components/Pager";
 import { PageHeader } from "@/components/ui/PageHeader";
@@ -11,14 +10,7 @@ export default async function AdminUsersPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const supabase = await createClient();
-  const {
-    data: { user: authUser },
-  } = await supabase.auth.getUser();
-  if (!authUser) redirect("/login");
-
-  const admin = await prisma.user.findUnique({ where: { authUserId: authUser.id } });
-  if (!admin || admin.role !== "ADMIN") redirect("/dashboard");
+  const { admin } = await requireAdminPage();
 
   const resolvedSearchParams = await searchParams;
   const { skip, take, page } = parsePageParam(resolvedSearchParams);

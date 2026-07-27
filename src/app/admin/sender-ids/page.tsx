@@ -1,18 +1,10 @@
 import { prisma } from "@/lib/prisma";
-import { createClient } from "@/lib/supabase/server";
-import { redirect } from "next/navigation";
+import { requireAdminPage } from "@/lib/adminAuth";
 import SenderIdManager from "./SenderIdManager";
 import { PageHeader } from "@/components/ui/PageHeader";
 
 export default async function AdminSenderIdsPage() {
-  const supabase = await createClient();
-  const {
-    data: { user: authUser },
-  } = await supabase.auth.getUser();
-  if (!authUser) redirect("/login");
-
-  const admin = await prisma.user.findUnique({ where: { authUserId: authUser.id } });
-  if (!admin || admin.role !== "ADMIN") redirect("/dashboard");
+  await requireAdminPage();
 
   const senderIds = await prisma.senderId.findMany({
     include: { tenant: true, carrierStatuses: true },

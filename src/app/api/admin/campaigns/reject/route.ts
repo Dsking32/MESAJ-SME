@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { createClient } from "@/lib/supabase/server";
+import { requireAdminApi } from "@/lib/adminAuth";
 import { PRICE_PER_SMS } from "@/lib/pricing";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rateLimit";
 import { notifyCampaignRejected } from "@/lib/notifications";
@@ -15,18 +15,9 @@ import { notifyCampaignRejected } from "@/lib/notifications";
  * this response if it doesn't send.
  */
 export async function POST(req: NextRequest) {
-  const supabase = await createClient();
-  const {
-    data: { user: authUser },
-  } = await supabase.auth.getUser();
-
-  const admin = authUser
-    ? await prisma.user.findUnique({ where: { authUserId: authUser.id } })
-    : null;
-
-  if (!admin || admin.role !== "ADMIN") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
+  const auth = await requireAdminApi();
+  if (!auth.ok) return auth.response;
+  const { admin } = auth;
 
   const rl = await checkRateLimit(
     `admin-campaign-reject:${admin.id}`,

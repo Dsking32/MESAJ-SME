@@ -1,17 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { createClient } from "@/lib/supabase/server";
+import { requireAdminApi } from "@/lib/adminAuth";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rateLimit";
-
-async function requireAdmin() {
-  const supabase = await createClient();
-  const {
-    data: { user: authUser },
-  } = await supabase.auth.getUser();
-  if (!authUser) return null;
-  const admin = await prisma.user.findUnique({ where: { authUserId: authUser.id } });
-  return admin?.role === "ADMIN" ? admin : null;
-}
 
 /**
  * GET /api/admin/tenants/[id]
@@ -19,8 +9,8 @@ async function requireAdmin() {
  * recent campaigns, recent wallet transactions.
  */
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const admin = await requireAdmin();
-  if (!admin) return NextResponse.json({ error: "Admin access required" }, { status: 403 });
+  const auth = await requireAdminApi();
+  if (!auth.ok) return auth.response;
 
   const { id } = await params;
 
@@ -43,8 +33,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
  * Admin edits a client's business/KYC details.
  */
 export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  const admin = await requireAdmin();
-  if (!admin) return NextResponse.json({ error: "Admin access required" }, { status: 403 });
+  const auth = await requireAdminApi();
+  if (!auth.ok) return auth.response;
+  const { admin } = auth;
 
   const rl = await checkRateLimit(
     `admin-tenant-update:${admin.id}`,
