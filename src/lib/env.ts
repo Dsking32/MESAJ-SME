@@ -38,6 +38,11 @@ const REQUIRED_VARS: EnvVar[] = [
 
 const RECOMMENDED_VARS: EnvVar[] = [
   { name: "MESAJ_API_TOKEN", usedFor: "Mesaj bulk SMS API bearer token (sending will fail)" },
+  {
+    name: "MESAJ_WEBHOOK_SECRET",
+    usedFor:
+      "shared secret to verify inbound Mesaj delivery-report webhooks (see README — confirm the exact header/scheme with Mesaj; without this set, webhook auth is skipped entirely, which is NOT safe for production)",
+  },
   { name: "PAYSTACK_SECRET_KEY", usedFor: "Paystack webhook verification + wallet funding (top-ups will fail)" },
   { name: "NEXT_PUBLIC_APP_URL", usedFor: "Paystack callback_url after wallet top-up (top-up redirect will be broken)" },
   { name: "RESEND_API_KEY", usedFor: "client email notifications — Sender ID status, campaign rejection (emails silently won't send)" },

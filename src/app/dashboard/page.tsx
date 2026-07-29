@@ -152,6 +152,7 @@ export default async function DashboardOverviewPage() {
               <TH>Recipients</TH>
               <TH>Status</TH>
               <TH>Date</TH>
+              <TH>Report</TH>
             </THead>
             <tbody>
               {tenant.campaigns.map((c) => (
@@ -162,6 +163,18 @@ export default async function DashboardOverviewPage() {
                     <Badge tone={statusTone(c.status)}>{c.status.replace(/_/g, " ")}</Badge>
                   </TD>
                   <TD className="text-[var(--color-ink-500)]">{formatDate(c.createdAt)}</TD>
+                  <TD>
+                    {c.status === "SENT" ? (
+                      <Link
+                        href={`/dashboard/campaigns/${c.id}/report`}
+                        className="font-medium text-[var(--color-brand-600)] hover:text-[var(--color-brand-700)]"
+                      >
+                        View
+                      </Link>
+                    ) : (
+                      <span className="text-[var(--color-ink-300)]">—</span>
+                    )}
+                  </TD>
                 </TR>
               ))}
             </tbody>

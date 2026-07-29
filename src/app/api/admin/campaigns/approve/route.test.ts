@@ -30,6 +30,9 @@ vi.mock("@/lib/mesajClient", () => ({
 vi.mock("@/lib/notifications", () => ({
   notifyCampaignSent: vi.fn(),
 }));
+vi.mock("@/lib/messageRecipients", () => ({
+  recordMessageRecipients: vi.fn(),
+}));
 vi.mock("@sentry/nextjs", () => ({
   captureMessage: vi.fn(),
 }));
@@ -40,6 +43,7 @@ import { createClient } from "@/lib/supabase/server";
 import { checkRateLimit } from "@/lib/rateLimit";
 import { sendCampaignAcrossCarriers } from "@/lib/mesajClient";
 import { notifyCampaignSent } from "@/lib/notifications";
+import { recordMessageRecipients } from "@/lib/messageRecipients";
 import * as Sentry from "@sentry/nextjs";
 
 const mockedPrisma = vi.mocked(prisma, { deep: true });
@@ -47,6 +51,7 @@ const mockedCreateClient = vi.mocked(createClient);
 const mockedCheckRateLimit = vi.mocked(checkRateLimit);
 const mockedSendCampaign = vi.mocked(sendCampaignAcrossCarriers);
 const mockedNotify = vi.mocked(notifyCampaignSent);
+const mockedRecordMessageRecipients = vi.mocked(recordMessageRecipients);
 const mockedCaptureMessage = vi.mocked(Sentry.captureMessage);
 
 const ADMIN_USER = { id: "admin-1", role: "ADMIN" };
@@ -101,6 +106,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockedCheckRateLimit.mockResolvedValue({ allowed: true, limit: 30, remaining: 29, resetAt: new Date() });
   mockedPrisma.campaign.updateMany.mockResolvedValue({ count: 1 } as never);
+  mockedPrisma.campaignCarrierBatch.create.mockResolvedValue({ id: "batch-1" } as never);
 });
 
 describe("POST /api/admin/campaigns/approve", () => {

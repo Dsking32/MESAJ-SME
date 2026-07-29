@@ -105,8 +105,22 @@ users to ADMIN (or demote back to CLIENT) via `/admin/users`.
 - **Sender ID status is manually managed by admin** per carrier — there's no
   live telco/Mesaj feed wired up yet (a Mesaj webhook reportedly exists but
   wasn't scoped for v1).
-- **Delivery reports are manual** — admin pulls, cleans, and emails them;
-  not automated in this version.
+- **Delivery reports are automated, admin-gated.** `MessageRecipient` rows
+  (one per number in a campaign) are created from Mesaj's send response at
+  send time, then updated as delivery webhooks arrive at
+  `/api/mesaj/webhook` (see that route's doc comment — matching is on
+  `reference`, NOT `messageId`, which is shared across recipients in the
+  same send). Clients can't see the per-MSISDN/telco/status report until
+  an admin explicitly approves it at `/admin/campaigns/reports` (see
+  `/api/admin/campaigns/[id]/approve-report`) — same "admin reviews before
+  client sees it" shape as message-content approval, just gating the
+  report instead of the send.
+  **Not yet confirmed with Mesaj:** whether the send response array is
+  reliably in the same order as the request's `recipients` array (matching
+  currently depends on this — see `parseSendResponse` in
+  `lib/mesajClient.ts`), and the actual webhook auth scheme (currently a
+  placeholder shared-secret header, see `MESAJ_WEBHOOK_SECRET`). Confirm
+  both with Mesaj before relying on this in production.
 
 ## Before taking real customer money
 
@@ -133,8 +147,8 @@ repo before a real launch:
 
 ## Still to build (deferred past this scaffold)
 
-- Mesaj webhook integration for automated Sender ID status + delivery reports
-  (flagged as the top automation candidate once you're ready to look at it)
+- Mesaj webhook integration for automated Sender ID status (delivery
+  reports are now automated — see above; Sender ID status is still manual)
 - SMS notifications (email notifications are wired in; SMS would need its
   own approved Sender ID with each carrier first — see `lib/notifications.ts`)
 - Further production-grade error handling and input sanitization beyond

@@ -8,6 +8,7 @@ import { getSegmentInfo } from "@/lib/smsSegments";
 import { loadCarrierOverrides } from "@/lib/portedNumbers";
 import { checkContentLength, checkRecipientCount, MAX_MESSAGE_SEGMENTS } from "@/lib/limits";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rateLimit";
+import { recordMessageRecipients } from "@/lib/messageRecipients";
 
 /**
  * POST /api/admin/tenants/[id]/campaigns/send
@@ -132,7 +133,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
 
   let totalSent = 0;
   for (const r of sendResults) {
-    await prisma.campaignCarrierBatch.create({
+    const carrierBatch = await prisma.campaignCarrierBatch.create({
       data: {
         campaignId: campaign.id,
         carrier: r.carrier,
@@ -142,6 +143,14 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         mesajResponseRaw: JSON.stringify(r.result.raw),
         sentAt: new Date(),
       },
+    });
+    await recordMessageRecipients({
+      campaignId: campaign.id,
+      carrierBatchId: carrierBatch.id,
+      tenantId,
+      carrier: r.carrier,
+      shortCode: r.shortCode,
+      recipientResults: r.result.recipientResults,
     });
     totalSent += r.result.sentRecipients.length;
   }

@@ -132,6 +132,70 @@ describe("sendCarrierBatch", () => {
   }, 10_000);
 });
 
+describe("recipientResults (per-recipient reference matching)", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("zips each recipient to its reference when the response array matches recipient order/length", async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    // Real shape confirmed from Mesaj: array of per-recipient results, same
+    // order as the request's `recipients` array. `messageId` is shared
+    // across recipients and deliberately NOT used for matching.
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        { reference: "ref-a", transactionId: "ref-a", messageId: "shared-id", status: "SENT", error: null },
+        { reference: "ref-b", transactionId: "ref-b", messageId: "shared-id", status: "SENT", error: null },
+      ])
+    );
+
+    const result = await sendCarrierBatch({
+      message: "hi",
+      shortCode: "MYBRAND",
+      recipients: ["2348031234567", "2348031234568"],
+    });
+
+    expect(result.recipientResults).toEqual([
+      { phoneNumber: "2348031234567", accepted: true, reference: "ref-a" },
+      { phoneNumber: "2348031234568", accepted: true, reference: "ref-b" },
+    ]);
+  });
+
+  it("falls back to null references when the response shape doesn't match recipient count", async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    // Malformed/unexpected shape — can't safely zip, so no reference is
+    // attributed to any recipient rather than risking a wrong match.
+    fetchMock.mockResolvedValue(jsonResponse({ status: "ok" }));
+
+    const result = await sendCarrierBatch({
+      message: "hi",
+      shortCode: "MYBRAND",
+      recipients: ["2348031234567", "2348031234568"],
+    });
+
+    expect(result.recipientResults).toEqual([
+      { phoneNumber: "2348031234567", accepted: true, reference: null },
+      { phoneNumber: "2348031234568", accepted: true, reference: null },
+    ]);
+  });
+
+  it("marks recipients as not accepted (and no reference) when the chunk fails", async () => {
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValue(jsonResponse({ error: "bad request" }, 400));
+
+    const result = await sendCarrierBatch({
+      message: "hi",
+      shortCode: "MYBRAND",
+      recipients: ["2348031234567"],
+    });
+
+    expect(result.recipientResults).toEqual([{ phoneNumber: "2348031234567", accepted: false, reference: null }]);
+  });
+});
+
 describe("sendCampaignAcrossCarriers", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());

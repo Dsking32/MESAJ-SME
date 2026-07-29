@@ -23,11 +23,13 @@ const STATUS_TONE: Record<string, Tone> = {
   ACTIVE: "success",
   SENT: "success",
   COMPLETED: "success",
+  DELIVERED: "success",
   PENDING: "warning",
   PENDING_APPROVAL: "warning",
   REJECTED: "danger",
   FAILED: "danger",
   DECLINED: "danger",
+  EXPIRED: "danger",
 };
 
 /** Maps a domain status string (APPROVED / PENDING / REJECTED / …) to a tone automatically. */

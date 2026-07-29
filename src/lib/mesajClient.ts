@@ -59,6 +59,27 @@ export interface SendBatchParams {
   recipients: string[]; // normalized 234XXXXXXXXXX numbers, already validated
 }
 
+/**
+ * Per-recipient outcome of a send, used to persist a MessageRecipient row
+ * for delivery-report matching. `reference` is Mesaj's per-recipient
+ * `reference`/`transactionId` from the send response — NOT `messageId`,
+ * which has been observed to be identical across every recipient in the
+ * same send request (see mesajClient.ts module doc). `reference` is what
+ * the delivery webhook echoes back, so it's the field we match on later.
+ *
+ * `reference` is only populated when we can confidently attribute a
+ * response entry to a specific recipient — i.e. the response is an array
+ * of the same length as the recipients we sent in that chunk (see
+ * parseSendResponse below). If Mesaj's response shape ever doesn't match
+ * that assumption, `reference` comes back null for the whole chunk rather
+ * than risk mis-attributing one recipient's reference to another.
+ */
+export interface RecipientSendResult {
+  phoneNumber: string;
+  accepted: boolean;
+  reference: string | null;
+}
+
 export interface SendBatchResult {
   success: boolean;
   carrier?: Carrier;
@@ -68,6 +89,34 @@ export interface SendBatchResult {
   sentRecipients: string[];
   /** Recipients whose chunk failed even after retries. */
   failedRecipients: string[];
+  /** Per-recipient detail (including Mesaj's reference, where available) for every recipient in the batch. */
+  recipientResults: RecipientSendResult[];
+}
+
+/**
+ * Mesaj's send/bulk success response is an array of per-recipient result
+ * objects (`{reference, transactionId, messageId, status, error}`), in the
+ * same order as the `recipients` array in the request — confirmed against
+ * real responses, but not documented, so this is deliberately defensive:
+ * if the array length doesn't match the recipients we sent, we can't
+ * safely zip them together, so every recipient in that chunk comes back
+ * with `reference: null` (still marked accepted/failed based on `success`,
+ * just without a reference to match a later webhook against).
+ */
+function parseSendResponse(raw: unknown, recipients: string[], accepted: boolean): RecipientSendResult[] {
+  if (Array.isArray(raw) && raw.length === recipients.length) {
+    return recipients.map((phoneNumber, i) => {
+      const entry = raw[i] as { reference?: unknown; transactionId?: unknown } | null;
+      const reference =
+        typeof entry?.reference === "string"
+          ? entry.reference
+          : typeof entry?.transactionId === "string"
+            ? entry.transactionId
+            : null;
+      return { phoneNumber, accepted, reference };
+    });
+  }
+  return recipients.map((phoneNumber) => ({ phoneNumber, accepted, reference: null }));
 }
 
 function isRetryableStatus(status: number): boolean {
@@ -166,12 +215,14 @@ export async function sendCarrierBatch(params: SendBatchParams): Promise<SendBat
   const chunks = chunk(params.recipients, MAX_RECIPIENTS_PER_REQUEST);
   const sentRecipients: string[] = [];
   const failedRecipients: string[] = [];
+  const recipientResults: RecipientSendResult[] = [];
   const rawResponses: unknown[] = [];
   let lastError: string | undefined;
 
   for (const recipientChunk of chunks) {
     const result = await sendChunkWithRetry(params.message, params.shortCode, recipientChunk);
     rawResponses.push(result.raw);
+    recipientResults.push(...parseSendResponse(result.raw, recipientChunk, result.success));
 
     if (result.success) {
       sentRecipients.push(...recipientChunk);
@@ -187,6 +238,7 @@ export async function sendCarrierBatch(params: SendBatchParams): Promise<SendBat
     error: lastError,
     sentRecipients,
     failedRecipients,
+    recipientResults,
   };
 }
 

@@ -114,6 +114,36 @@ export async function notifyCampaignRejected(params: {
  *  - Fully failed: every carrier batch failed (totalSent === 0). Same
  *    refund-already-happened note applies.
  */
+/**
+ * Sent when admin approves a campaign's delivery report for client
+ * visibility (see /api/admin/campaigns/[id]/approve-report). The report
+ * itself (MSISDN, telco, status per recipient) isn't included in the
+ * email — it just tells the client it's ready and links back to the
+ * dashboard, same pattern as the other notifications here.
+ */
+export async function notifyReportReady(params: {
+  to: string;
+  businessName: string;
+  messageBody: string;
+  recipientCount: number;
+  deliveredCount: number;
+  campaignId: string;
+  appUrl: string;
+}) {
+  const { to, businessName, messageBody, recipientCount, deliveredCount, campaignId, appUrl } = params;
+  const preview = messageBody.length > 100 ? `${messageBody.slice(0, 100)}…` : messageBody;
+
+  return sendEmail({
+    to,
+    subject: "Your campaign's delivery report is ready",
+    html: wrapHtml(`
+      <p>Hi ${escapeHtml(businessName)},</p>
+      <p>The delivery report for your campaign "${escapeHtml(preview)}" is ready — <strong>${deliveredCount}</strong> of ${recipientCount} recipients confirmed delivered.</p>
+      <p><a href="${escapeHtml(appUrl)}/dashboard/campaigns/${campaignId}/report" style="color: #16a34a;">View the full report</a>, including per-number status and telco.</p>
+    `),
+  });
+}
+
 export async function notifyCampaignSent(params: {
   to: string;
   businessName: string;

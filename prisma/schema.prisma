@@ -47,6 +47,17 @@ enum TransactionType {
   REFUND
 }
 
+/// Per-recipient delivery status, populated from Mesaj's delivery webhook.
+/// Distinct from MesajBatchStatus (which is gateway-acceptance, at the
+/// carrier-batch level) — this is the actual telco outcome for one number.
+enum DeliveryStatus {
+  /// Gateway accepted the number but no delivery webhook has arrived yet.
+  PENDING
+  DELIVERED
+  FAILED
+  EXPIRED
+}
+
 enum MesajBatchStatus {
   PENDING
   SUCCESS
@@ -72,6 +83,7 @@ model User {
   createdAt  DateTime @default(now())
 
   reviewedCampaigns Campaign[] @relation("ReviewedBy")
+  reportApprovedCampaigns Campaign[] @relation("ReportApprovedBy")
   auditLogEntries   AdminAuditLog[]
 }
 
@@ -182,7 +194,17 @@ model Campaign {
   createdAt        DateTime       @default(now())
   approvedAt       DateTime?
 
-  carrierBatches CampaignCarrierBatch[]
+  /// Delivery report visibility gate — a client's MSISDN/telco/status report
+  /// only becomes visible on their dashboard once an admin explicitly
+  /// reviews and approves it (see /api/admin/campaigns/[id]/approve-report).
+  /// Null means the report either isn't ready to review yet (delivery
+  /// webhooks still trickling in) or is ready but hasn't been reviewed.
+  reportApprovedAt      DateTime?
+  reportApprovedByAdminId String?
+  reportApprovedByAdmin  User?    @relation("ReportApprovedBy", fields: [reportApprovedByAdminId], references: [id])
+
+  carrierBatches     CampaignCarrierBatch[]
+  messageRecipients  MessageRecipient[]
 }
 
 /// A campaign is split into one send request per carrier (Mesaj's API takes
@@ -198,6 +220,48 @@ model CampaignCarrierBatch {
   mesajResponseRaw   String? // raw JSON response, for debugging/reconciliation
   sentAt             DateTime?
   createdAt          DateTime          @default(now())
+
+  recipients MessageRecipient[]
+}
+
+/// One row per recipient number in a campaign — the per-MSISDN detail that
+/// CampaignCarrierBatch only aggregates as a count. Created at send time
+/// from Mesaj's send/bulk response (one entry per recipient, in the same
+/// order as the request's `recipients` array — see lib/mesajClient.ts),
+/// then updated as delivery webhooks arrive from Mesaj.
+///
+/// Matching an inbound webhook back to a row: primarily via
+/// `mesajReference`, which mirrors the `reference` (== `transactionId`)
+/// field Mesaj returns per recipient at send time and echoes back in the
+/// webhook payload. NOT `messageId` — observed to be shared across every
+/// recipient in a single send request, so it can't disambiguate. Falls
+/// back to (phoneNumber, shortcodeUsed, status=PENDING) if `mesajReference`
+/// is ever missing (e.g. the send response didn't parse as expected).
+model MessageRecipient {
+  id             String   @id @default(cuid())
+  campaignId     String
+  campaign       Campaign @relation(fields: [campaignId], references: [id])
+  carrierBatchId String
+  carrierBatch   CampaignCarrierBatch @relation(fields: [carrierBatchId], references: [id])
+  tenantId       String // denormalized so a tenant's report query doesn't need to join through Campaign
+  phoneNumber    String // normalized 234XXXXXXXXXX
+  carrier        Carrier
+  shortcodeUsed  String
+
+  mesajReference String?        @unique // Mesaj's per-recipient `reference`/`transactionId` from the send response
+  gatewayAccepted Boolean       // true if Mesaj's send response accepted this number, false if that chunk failed outright
+  deliveryStatus DeliveryStatus @default(PENDING)
+  errorCode      String?
+  errorMessage   String?
+  deliveredAt    DateTime?
+  failedAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([campaignId])
+  @@index([phoneNumber, shortcodeUsed, deliveryStatus])
 }
 
 /// Manual correction for a number whose real carrier doesn't match its
