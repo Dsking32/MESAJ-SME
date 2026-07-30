@@ -59,12 +59,18 @@ function toDeliveryStatus(status: string): "DELIVERED" | "FAILED" | "EXPIRED" {
 }
 
 export async function POST(req: NextRequest) {
-  // TODO: confirm the actual auth scheme with Mesaj (signed header? shared
-  // secret in a query param? IP allowlist?) and replace this placeholder
-  // header check accordingly once confirmed.
+  // Mesaj doesn't support a signing scheme or custom headers — it just POSTs
+  // directly to whatever URL is configured on their side. So the secret has
+  // to live IN the URL itself (query string), since that's the only thing
+  // guaranteed to come back on every request. The webhook URL configured in
+  // Mesaj's dashboard must be:
+  //   https://<your-domain>/api/mesaj/webhook?secret=<MESAJ_WEBHOOK_SECRET>
+  // Weaker than HMAC signing, but far better than an open endpoint — anyone
+  // who doesn't know the secret can't hit this meaningfully. If Mesaj adds
+  // real signing support later, prefer that over this.
   const configuredSecret = process.env.MESAJ_WEBHOOK_SECRET;
   if (configuredSecret) {
-    const provided = req.headers.get("x-webhook-secret");
+    const provided = req.nextUrl.searchParams.get("secret");
     if (provided !== configuredSecret) {
       return NextResponse.json({ error: "Invalid webhook credentials" }, { status: 401 });
     }
