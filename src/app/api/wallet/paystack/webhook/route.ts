@@ -54,7 +54,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
-  const event = JSON.parse(rawBody);
+  interface PaystackChargeEvent {
+    event?: string;
+    data: { metadata?: { tenantId?: string }; amount: number; reference: string };
+  }
+
+  let event: PaystackChargeEvent;
+  try {
+    event = JSON.parse(rawBody);
+  } catch {
+    // Signature already verified above, so this would mean Paystack sent a
+    // body that doesn't parse as JSON — not something retrying will fix.
+    return NextResponse.json({ error: "Malformed payload" }, { status: 400 });
+  }
 
   if (event.event === "charge.success") {
     const { metadata, amount, reference } = event.data;

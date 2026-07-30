@@ -257,6 +257,10 @@ describe("batchStatusFromResult", () => {
         raw: null,
         sentRecipients: ["2348031234567", "2348031234568"],
         failedRecipients: [],
+        recipientResults: [
+          { phoneNumber: "2348031234567", accepted: true, reference: null },
+          { phoneNumber: "2348031234568", accepted: true, reference: null },
+        ],
       })
     ).toBe("SUCCESS");
   });
@@ -268,6 +272,7 @@ describe("batchStatusFromResult", () => {
         raw: null,
         sentRecipients: [],
         failedRecipients: ["2348031234567"],
+        recipientResults: [{ phoneNumber: "2348031234567", accepted: false, reference: null }],
       })
     ).toBe("FAILED");
   });
@@ -279,6 +284,11 @@ describe("batchStatusFromResult", () => {
         raw: null,
         sentRecipients: ["2348031234567", "2348031234568"],
         failedRecipients: ["2348031234569"],
+        recipientResults: [
+          { phoneNumber: "2348031234567", accepted: true, reference: null },
+          { phoneNumber: "2348031234568", accepted: true, reference: null },
+          { phoneNumber: "2348031234569", accepted: false, reference: null },
+        ],
       })
     ).toBe("PARTIAL");
   });

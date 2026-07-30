@@ -49,6 +49,16 @@ full product/technical spec this code implements.
    `db push` has no history and nothing to roll back if a change goes wrong;
    fine for early solo development, not once there's real client data.
 
+   **Before deploying the RLS migration** (`enable_row_level_security`)
+   against a given `DATABASE_URL`, run:
+   ```bash
+   npm run verify-rls
+   ```
+   This confirms Prisma's connection role bypasses RLS (Supabase's default
+   `postgres` role does). If it doesn't, every tenant-scoped route will
+   start returning empty results instead of real data the moment RLS is
+   enabled — see the migration file's own comments for why.
+
 4. **Supabase Auth**
    - Enable email/password auth in your Supabase project
    - Set the site URL / redirect URLs to match `NEXT_PUBLIC_APP_URL`
@@ -120,7 +130,11 @@ users to ADMIN (or demote back to CLIENT) via `/admin/users`.
   currently depends on this — see `parseSendResponse` in
   `lib/mesajClient.ts`), and the actual webhook auth scheme (currently a
   placeholder shared-secret header, see `MESAJ_WEBHOOK_SECRET`). Confirm
-  both with Mesaj before relying on this in production.
+  both with Mesaj before relying on this in production. Note: with
+  `NODE_ENV=production`, the webhook now refuses all requests (503) if
+  `MESAJ_WEBHOOK_SECRET` isn't set, rather than silently skipping auth —
+  so this can't go live half-configured, but you still need the real
+  scheme confirmed with Mesaj to know what to check against.
 
 ## Before taking real customer money
 

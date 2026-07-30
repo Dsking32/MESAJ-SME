@@ -13,6 +13,7 @@
   "test:coverage": "vitest run --coverage",
   "test:integration": "vitest run --config vitest.integration.config.ts",
   "bootstrap-admin": "tsx scripts/bootstrap-admin.ts",
+  "verify-rls": "tsx scripts/verify-rls.ts",
   "postinstall": "prisma generate"
 },
   "dependencies": {

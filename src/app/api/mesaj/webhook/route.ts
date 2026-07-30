@@ -60,15 +60,27 @@ function toDeliveryStatus(status: string): "DELIVERED" | "FAILED" | "EXPIRED" {
 
 export async function POST(req: NextRequest) {
   // TODO: confirm the actual auth scheme with Mesaj (signed header? shared
-  // secret in a query param? IP allowlist?) and replace this placeholder.
-  // As written, this only checks a shared secret if one is configured —
-  // NOT safe to rely on for production until confirmed with Mesaj.
+  // secret in a query param? IP allowlist?) and replace this placeholder
+  // header check accordingly once confirmed.
   const configuredSecret = process.env.MESAJ_WEBHOOK_SECRET;
   if (configuredSecret) {
     const provided = req.headers.get("x-webhook-secret");
     if (provided !== configuredSecret) {
       return NextResponse.json({ error: "Invalid webhook credentials" }, { status: 401 });
     }
+  } else if (process.env.NODE_ENV === "production") {
+    // Fail closed in production: an unset secret used to mean "skip the
+    // check entirely," which left this endpoint open to anyone who found
+    // the URL — they could forge delivery reports and mark any recipient
+    // DELIVERED/FAILED at will. validateEnv() already warns about this at
+    // boot (see lib/env.ts), but a missed warning shouldn't mean an open
+    // webhook. Dev/staging without the var set still passes through
+    // unauthenticated so local testing isn't blocked before a secret
+    // exists yet.
+    Sentry.captureMessage("Mesaj webhook: rejected — MESAJ_WEBHOOK_SECRET not configured in production", {
+      level: "error",
+    });
+    return NextResponse.json({ error: "Webhook not configured" }, { status: 503 });
   }
 
   const body = (await req.json().catch(() => null)) as MesajWebhookPayload | null;
