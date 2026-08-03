@@ -44,10 +44,30 @@ full product/technical spec this code implements.
    npx prisma db push
    ```
 
-   Schema changes should go through `npx prisma migrate dev --name <what-changed>`
-   from here on, not `db push` — see `prisma/migrations/` for the baseline.
-   `db push` has no history and nothing to roll back if a change goes wrong;
-   fine for early solo development, not once there's real client data.
+   Schema changes should go through a real migration, not `db push`, from
+   here on — see `prisma/migrations/` for the baseline. `db push` has no
+   history and nothing to roll back if a change goes wrong; fine for early
+   solo development, not once there's real client data.
+
+   **Use `npx prisma migrate deploy` to apply existing migrations, not
+   `npx prisma migrate dev`.** `migrate dev` replays every migration from
+   scratch against a temporary shadow database to validate a new one —
+   but the `enable_row_level_security` migration calls `auth.uid()`, which
+   only exists because Supabase provisions an `auth` schema on your real
+   project. The shadow DB is plain Postgres with no `auth` schema, so
+   `migrate dev` fails immediately with `schema "auth" does not exist`,
+   even for changes that have nothing to do with RLS. `migrate deploy`
+   applies pending migrations directly against the real database with no
+   shadow DB involved, so it doesn't hit this.
+
+   To make a **new** schema change: hand-write the migration SQL yourself
+   in a new `prisma/migrations/<timestamp>_<name>/migration.sql` folder
+   (see any existing migration for the format/comment style), update
+   `schema.prisma` to match, then run `migrate deploy` to apply it. This
+   is more manual than `migrate dev`'s auto-diffing, but avoids the
+   shadow-DB wall entirely — until/unless a shadow database with the
+   `auth` schema present is set up via `shadowDatabaseUrl` (see Prisma's
+   docs on customizing migrations for how).
 
    **Before deploying the RLS migration** (`enable_row_level_security`)
    against a given `DATABASE_URL`, run:
@@ -74,6 +94,36 @@ full product/technical spec this code implements.
    `src/app/global-error.tsx`) but needs a Sentry account + project to
    actually report anywhere — see step 2 for the env vars. Without them set,
    the app runs identically, it just doesn't report errors anywhere.
+
+## Testing
+
+```bash
+npm test              # unit tests — no database needed, safe to run anytime
+npm run test:integration  # integration tests — needs a real Postgres DB
+```
+
+The integration tests (`src/lib/__integration__/`) prove guarantees a
+mocked-Prisma unit test can't — e.g. that two concurrent webhook
+deliveries with the same `paymentReference` can never both insert (the
+wallet double-credit protection), and that the rate limiter counts
+concurrent hits correctly under a real race. They do this by actually
+inserting/deleting rows for real, including a concurrent-write stress
+test.
+
+**They will not run without `DATABASE_URL` set**, and that's
+intentional — `vitest.integration.config.ts` does not load `.env`, so
+running `npm run test:integration` never accidentally touches your real
+database. Point `DATABASE_URL` at a disposable database with the
+migrations applied (a second, free Supabase project used only for
+tests works well), never at production — these tests create and delete
+real rows, including a fake `Tenant` row that's only cleaned up if the
+test suite exits normally. Set it for one shell session, run the tests,
+then close that session:
+
+```bash
+DATABASE_URL="<disposable-test-db-url>" npx prisma migrate deploy
+DATABASE_URL="<disposable-test-db-url>" npm run test:integration
+```
 
 ## How the pieces fit together
 
@@ -153,8 +203,11 @@ repo before a real launch:
   Project Settings -> Backups, not just assume it's covered.
 - **Migration baseline.** See the Database section above — `db push` has
   gotten this project to today, but every schema change from here on
-  should go through `prisma migrate dev` so there's a reviewable,
-  revertible history once real tenant/wallet/campaign data exists.
+  should go through a hand-written migration applied with
+  `prisma migrate deploy` (not `migrate dev` — see the Database section
+  for why `migrate dev` fails on this project specifically) so there's a
+  reviewable, revertible history once real tenant/wallet/campaign data
+  exists.
 - **Sentry account.** The code side is done (see step 6 above) — just
   needs a Sentry project created and its DSN dropped into env vars
   wherever this is hosted.
