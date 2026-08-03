@@ -14,10 +14,24 @@ import { PrismaPg } from "@prisma/adapter-pg";
 // SSL: the old Rust engine accepted Supabase's certificate by default;
 // the node-pg adapter is stricter and can reject it (P1010 / self-signed
 // certificate errors) unless told not to verify it. Supabase's pooled
-// connection is already TLS-terminated at their edge, so this is safe.
+// connection is already TLS-terminated at their edge, so this is safe —
+// but ONLY for Supabase. A local/CI Postgres container (docker-compose,
+// GitHub Actions services.postgres, etc.) has no TLS listener at all, and
+// forcing ssl there fails with "the server does not support SSL
+// connections". So: force ssl for everything except localhost/127.0.0.1.
+function isLocalDatabase(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const { hostname } = new URL(url);
+    return hostname === "localhost" || hostname === "127.0.0.1";
+  } catch {
+    return false;
+  }
+}
+
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
+  ...(isLocalDatabase(process.env.DATABASE_URL) ? {} : { ssl: { rejectUnauthorized: false } }),
 });
 
 // Standard Next.js singleton pattern to avoid exhausting DB connections

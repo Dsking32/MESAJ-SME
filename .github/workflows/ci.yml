@@ -151,11 +151,14 @@ jobs:
       - run: npx prisma validate
       - name: Check for schema drift not captured by a migration
         env:
+          # Prisma 7 removed --shadow-database-url as a CLI flag on
+          # `migrate diff`; the shadow DB is now read from
+          # prisma.config.ts's datasource.shadowDatabaseUrl, which in turn
+          # reads this env var.
           SHADOW_DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci_shadow"
         run: |
           npx prisma migrate diff \
             --from-migrations ./prisma/migrations \
             --to-schema-datamodel ./prisma/schema.prisma \
-            --shadow-database-url "$SHADOW_DATABASE_URL" \
             --exit-code || \
           (echo "::error::schema.prisma has changes not captured in prisma/migrations — run 'npx prisma migrate dev' and commit the result." && exit 1)
