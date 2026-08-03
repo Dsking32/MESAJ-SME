@@ -9,6 +9,7 @@ import { loadCarrierOverrides } from "@/lib/portedNumbers";
 import { checkContentLength, checkRecipientCount, MAX_MESSAGE_SEGMENTS } from "@/lib/limits";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rateLimit";
 import { recordMessageRecipients } from "@/lib/messageRecipients";
+import { handleCampaignSendFailure } from "@/lib/campaignSendFailure";
 
 /**
  * POST /api/admin/tenants/[id]/campaigns/send
@@ -129,7 +130,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     },
   });
 
-  const sendResults = await sendCampaignAcrossCarriers(message, batches);
+  let sendResults;
+  try {
+    sendResults = await sendCampaignAcrossCarriers(message, batches);
+  } catch (err) {
+    // Same recovery as the client-approval path — campaign was already
+    // created as APPROVED and funds already reserved above, so a throw
+    // here means zero messages went out. Mark FAILED and refund in full
+    // rather than leaving the campaign stuck and the tenant short.
+    await handleCampaignSendFailure({
+      campaignId: campaign.id,
+      tenantId,
+      recipientCount: cleaned.totalValid,
+      error: err,
+    });
+    return NextResponse.json(
+      { error: "Send failed before reaching Mesaj — campaign marked FAILED and funds refunded in full." },
+      { status: 502 }
+    );
+  }
 
   let totalSent = 0;
   for (const r of sendResults) {

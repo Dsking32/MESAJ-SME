@@ -85,6 +85,8 @@ model User {
   reviewedCampaigns Campaign[] @relation("ReviewedBy")
   reportApprovedCampaigns Campaign[] @relation("ReportApprovedBy")
   auditLogEntries   AdminAuditLog[]
+
+  @@index([tenantId])
 }
 
 /// One SME business = one tenant. All client-facing data is scoped to a tenant.
@@ -118,6 +120,8 @@ model SenderId {
 
   carrierStatuses SenderIdCarrierStatus[]
   campaigns       Campaign[]
+
+  @@index([tenantId])
 }
 
 /// Per-carrier approval status + the exact approved shortCode string,
@@ -144,6 +148,8 @@ model WalletTransaction {
   paymentReference  String?         @unique
   createdByAdminId  String? // set when type = MANUAL_ADJUST
   createdAt         DateTime        @default(now())
+
+  @@index([tenantId])
 }
 
 model ContactList {
@@ -154,6 +160,8 @@ model ContactList {
   createdAt DateTime  @default(now())
 
   contacts Contact[]
+
+  @@index([tenantId])
 }
 
 model Contact {
@@ -163,6 +171,8 @@ model Contact {
   phoneNumber   String // stored normalized, 234 international format
   carrier       Carrier?
   createdAt     DateTime    @default(now())
+
+  @@index([contactListId])
 }
 
 model SavedMessage {
@@ -171,6 +181,8 @@ model SavedMessage {
   tenant    Tenant   @relation(fields: [tenantId], references: [id])
   body      String
   createdAt DateTime @default(now())
+
+  @@index([tenantId])
 }
 
 model Campaign {
@@ -205,6 +217,9 @@ model Campaign {
 
   carrierBatches     CampaignCarrierBatch[]
   messageRecipients  MessageRecipient[]
+
+  @@index([tenantId])
+  @@index([senderIdId])
 }
 
 /// A campaign is split into one send request per carrier (Mesaj's API takes
@@ -222,6 +237,8 @@ model CampaignCarrierBatch {
   createdAt          DateTime          @default(now())
 
   recipients MessageRecipient[]
+
+  @@index([campaignId])
 }
 
 /// One row per recipient number in a campaign — the per-MSISDN detail that

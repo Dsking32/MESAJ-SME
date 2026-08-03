@@ -8,6 +8,7 @@ import { PRICE_PER_SMS } from "@/lib/pricing";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rateLimit";
 import { notifyCampaignSent } from "@/lib/notifications";
 import { recordMessageRecipients } from "@/lib/messageRecipients";
+import { handleCampaignSendFailure } from "@/lib/campaignSendFailure";
 
 /**
  * POST /api/admin/campaigns/approve
@@ -92,7 +93,27 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Campaign was already processed by another request" }, { status: 409 });
   }
 
-  const sendResults = await sendCampaignAcrossCarriers(campaign.messageBody, batches);
+  let sendResults;
+  try {
+    sendResults = await sendCampaignAcrossCarriers(campaign.messageBody, batches);
+  } catch (err) {
+    // The campaign is already APPROVED and funds already reserved at this
+    // point — a throw here (e.g. MESAJ_API_TOKEN missing/expired) means
+    // zero messages went out. Without this, the campaign would be stuck
+    // APPROVED forever with the client's wallet short for a send that
+    // never happened. Mark it FAILED and refund in full, then surface a
+    // 502 so whoever/whatever triggered this knows it didn't just work.
+    await handleCampaignSendFailure({
+      campaignId: campaign.id,
+      tenantId: campaign.tenantId,
+      recipientCount: campaign.recipientCount,
+      error: err,
+    });
+    return NextResponse.json(
+      { error: "Send failed before reaching Mesaj — campaign marked FAILED and funds refunded in full." },
+      { status: 502 }
+    );
+  }
 
   let totalSent = 0;
   for (const r of sendResults) {
