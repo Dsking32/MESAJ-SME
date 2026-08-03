@@ -94,6 +94,19 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Stub-only: the RLS migration's SQL functions reference auth.uid(),
+      # which only exists on real Supabase projects. This is NOT a real
+      # implementation of Supabase auth — it's the minimum needed so the
+      # migration compiles on a plain postgres:16 container. Prisma connects
+      # as the RLS-bypassing owner role either way, so this has no effect on
+      # what the integration tests actually verify.
+      - name: Stub Supabase auth schema (auth.uid())
+        run: |
+          PGPASSWORD=ci psql -h localhost -U ci -d ci_integration <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS auth;
+          CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
+          LANGUAGE sql STABLE AS $$ SELECT NULL::uuid; $$;
+          SQL
       - name: Apply real migrations to the test database
         run: npx prisma migrate deploy
       - run: npm run test:integration
@@ -126,6 +139,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Same stub as integration-test, above — the shadow DB starts empty
+      # too, and prisma migrate diff replays every migration against it.
+      - name: Stub Supabase auth schema (auth.uid())
+        run: |
+          PGPASSWORD=ci psql -h localhost -U ci -d ci_shadow <<'SQL'
+          CREATE SCHEMA IF NOT EXISTS auth;
+          CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
+          LANGUAGE sql STABLE AS $$ SELECT NULL::uuid; $$;
+          SQL
       - run: npx prisma validate
       - name: Check for schema drift not captured by a migration
         env:
