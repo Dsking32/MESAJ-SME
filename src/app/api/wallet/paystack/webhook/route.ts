@@ -2,23 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 import { PRICE_PER_SMS } from "@/lib/pricing";
-
-/**
- * True for a Prisma unique-constraint violation (error code P2002).
- * Duck-typed on `.code` rather than `instanceof Prisma.PrismaClientKnownRequestError`
- * so this check doesn't need the real `Prisma` runtime export — P2002 is a
- * stable, documented Prisma error code, so this is safe and one less
- * runtime dependency for a single-purpose check.
- * https://www.prisma.io/docs/orm/reference/error-reference#p2002
- */
-function isUniqueConstraintViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    (err as { code: unknown }).code === "P2002"
-  );
-}
+import { isUniqueConstraintViolation } from "@/lib/prismaErrors";
 
 /**
  * POST /api/wallet/paystack/webhook

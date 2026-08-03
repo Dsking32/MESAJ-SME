@@ -194,6 +194,15 @@ model Campaign {
   messageBody      String
   recipientCount   Int
   invalidCount     Int            @default(0)
+  /// Client-supplied `Idempotency-Key` header from POST /api/campaigns/submit,
+  /// echoed back on retries so a double-click or client retry can't create
+  /// two campaigns (and double-deduct the wallet) for the same submission.
+  /// Null for older rows created before this existed, and for any request
+  /// that doesn't send the header — the compound unique constraint below
+  /// only applies once both fields are non-null (Postgres doesn't enforce
+  /// uniqueness across rows containing a NULL in either column), so that's
+  /// safe.
+  idempotencyKey   String?
   /// JSON-encoded map of carrier -> validated, normalized recipient numbers,
   /// e.g. {"MTN":["234803..."],"AIRTEL":[],"GLO":[...],"MOBILE9":[]}.
   /// Captured at submit time so approval/send doesn't need to re-run
@@ -220,6 +229,7 @@ model Campaign {
 
   @@index([tenantId])
   @@index([senderIdId])
+  @@unique([tenantId, idempotencyKey])
 }
 
 /// A campaign is split into one send request per carrier (Mesaj's API takes
