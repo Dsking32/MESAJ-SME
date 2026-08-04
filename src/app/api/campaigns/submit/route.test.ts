@@ -70,18 +70,30 @@ const EXISTING_CAMPAIGN = {
   idempotencyKey: "client-key-1",
 };
 
+/**
+ * Stubs prisma.$transaction to call the callback with a fake `tx` client.
+ * Cast at the boundary (the whole mock function, not an inner parameter)
+ * rather than typing the callback param as `never` — a `never` parameter
+ * is never assignable to the real, non-`never` param type $transaction
+ * expects, so that approach fails type-checking against the real
+ * generated Prisma client even though it can slip past a stubbed-out one.
+ */
+function mockTransaction(tx: Record<string, unknown>) {
+  mockedPrisma.$transaction.mockImplementation(
+    ((fn: (tx: unknown) => unknown) => fn(tx)) as unknown as typeof prisma.$transaction
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockedCheckRateLimit.mockResolvedValue({ allowed: true, limit: 10, remaining: 9, resetAt: new Date() });
   mockedPrisma.campaign.findFirst.mockResolvedValue(null);
-  mockedPrisma.$transaction.mockImplementation(async (fn: never) =>
-    (fn as (tx: unknown) => unknown)({
-      senderId: { findFirst: vi.fn().mockResolvedValue({ id: "sender-1" }) },
-      tenant: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
-      campaign: { create: vi.fn().mockResolvedValue({ id: "campaign-new", ...VALID_BODY }) },
-      walletTransaction: { create: vi.fn().mockResolvedValue({}) },
-    })
-  );
+  mockTransaction({
+    senderId: { findFirst: vi.fn().mockResolvedValue({ id: "sender-1" }) },
+    tenant: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+    campaign: { create: vi.fn().mockResolvedValue({ id: "campaign-new", ...VALID_BODY }) },
+    walletTransaction: { create: vi.fn().mockResolvedValue({}) },
+  });
 });
 
 describe("POST /api/campaigns/submit — idempotency", () => {
@@ -102,14 +114,12 @@ describe("POST /api/campaigns/submit — idempotency", () => {
   it("creates a new campaign and stores the idempotency key when the key hasn't been seen before", async () => {
     mockAuthedUser();
     const createSpy = vi.fn().mockResolvedValue({ id: "campaign-new", ...VALID_BODY });
-    mockedPrisma.$transaction.mockImplementation(async (fn: never) =>
-      (fn as (tx: unknown) => unknown)({
-        senderId: { findFirst: vi.fn().mockResolvedValue({ id: "sender-1" }) },
-        tenant: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
-        campaign: { create: createSpy },
-        walletTransaction: { create: vi.fn().mockResolvedValue({}) },
-      })
-    );
+    mockTransaction({
+      senderId: { findFirst: vi.fn().mockResolvedValue({ id: "sender-1" }) },
+      tenant: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      campaign: { create: createSpy },
+      walletTransaction: { create: vi.fn().mockResolvedValue({}) },
+    });
 
     const res = await POST(postRequest(VALID_BODY, "client-key-2"));
     const body = await res.json();
@@ -187,14 +197,12 @@ describe("POST /api/campaigns/submit — baseline behavior", () => {
 
   it("returns 402 when the wallet balance is insufficient", async () => {
     mockAuthedUser();
-    mockedPrisma.$transaction.mockImplementation(async (fn: never) =>
-      (fn as (tx: unknown) => unknown)({
-        senderId: { findFirst: vi.fn().mockResolvedValue({ id: "sender-1" }) },
-        tenant: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        campaign: { create: vi.fn() },
-        walletTransaction: { create: vi.fn() },
-      })
-    );
+    mockTransaction({
+      senderId: { findFirst: vi.fn().mockResolvedValue({ id: "sender-1" }) },
+      tenant: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      campaign: { create: vi.fn() },
+      walletTransaction: { create: vi.fn() },
+    });
 
     const res = await POST(postRequest(VALID_BODY));
     expect(res.status).toBe(402);
