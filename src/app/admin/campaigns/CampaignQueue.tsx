@@ -45,7 +45,7 @@ export default function CampaignQueue({ campaigns: initial }: { campaigns: Campa
       return;
     }
     setCampaigns((prev) => prev.filter((c) => c.id !== id));
-    toast(`Approved and sent — ${target?.tenant.businessName ?? "campaign"} is on its way.`, "success");
+    toast(`Approved — ${target?.tenant.businessName ?? "campaign"} is sending now.`, "success");
     router.refresh();
   }
 

@@ -13,6 +13,7 @@ const ALL_VARS = [
   "EMAIL_FROM",
   "SENTRY_DSN",
   "NEXT_PUBLIC_SENTRY_DSN",
+  "CRON_SECRET",
 ];
 
 function setAllVars() {

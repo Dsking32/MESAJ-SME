@@ -1,27 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
-import * as Sentry from "@sentry/nextjs";
+import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdminApi } from "@/lib/adminAuth";
-import { sendCampaignAcrossCarriers, type CarrierBatchInput, batchStatusFromResult } from "@/lib/mesajClient";
-import type { Carrier } from "@/lib/numbers";
-import { PRICE_PER_SMS } from "@/lib/pricing";
+import { computeEligibleCarrierBatches, processNextCampaignBatch } from "@/lib/campaignSendProcessor";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rateLimit";
-import { notifyCampaignSent } from "@/lib/notifications";
-import { recordMessageRecipients } from "@/lib/messageRecipients";
-import { handleCampaignSendFailure } from "@/lib/campaignSendFailure";
 
 /**
  * POST /api/admin/campaigns/approve
  * Body: { campaignId: string }
  *
- * Admin-only. Approves a campaign's message body, then:
- *  1. Loads the validated, carrier-grouped numbers captured at submit time
- *  2. Loads the tenant's Sender ID approval status + approved shortCode per carrier
- *  3. Excludes any carrier the Sender ID isn't approved on (client was already
- *     informed of this via the Sender ID status view)
- *  4. Sends one request per remaining carrier to Mesaj
- *  5. Records each carrier batch's result and deducts the wallet
- *  6. Logs the approval in the admin audit log
+ * Admin-only. Approves a campaign, then hands sending off to a background
+ * chain (see lib/campaignSendProcessor.ts) instead of sending
+ * synchronously inside this request.
+ *
+ * Why: the old version looped over every approved carrier and awaited
+ * each Mesaj call in this same request — meaning a campaign with several
+ * carriers, each with a large recipient list, could take minutes, all
+ * inside one HTTP request the admin's browser was blocked on, leaning on
+ * Vercel's execution-time limit by design rather than by architecture.
+ *
+ * Now: this route only validates, atomically claims the campaign as
+ * APPROVED, and schedules the first carrier's send via after() — which
+ * runs after this response is already sent, so the admin's request
+ * returns immediately. That first hop then triggers the next carrier as
+ * its own fresh serverless invocation, and so on, until every carrier is
+ * done, at which point the campaign is finalized (SENT/FAILED, refund,
+ * client notification) — see lib/campaignSendProcessor.ts for the full
+ * chain and lib/campaignSendFailure equivalent handling.
+ *
+ * The response here is now "approved and sending", not "sent" — the
+ * admin UI (CampaignQueue.tsx) already only checks res.ok, it doesn't
+ * inspect send results, so no further UI change was needed beyond the
+ * toast copy.
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAdminApi();
@@ -42,7 +52,7 @@ export async function POST(req: NextRequest) {
 
   const campaign = await prisma.campaign.findUnique({
     where: { id: campaignId },
-    include: { senderId: { include: { carrierStatuses: true } }, tenant: true },
+    include: { senderId: { include: { carrierStatuses: true } } },
   });
 
   if (!campaign) {
@@ -52,24 +62,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Campaign is not pending approval (status: ${campaign.status})` }, { status: 409 });
   }
 
-  const validatedNumbers: Record<Carrier, string[]> = JSON.parse(campaign.validatedNumbersJson);
-
-  // Build per-carrier batches, excluding any carrier the Sender ID isn't
-  // approved on — even if the client uploaded numbers for that carrier.
-  const batches: CarrierBatchInput[] = [];
-  for (const carrierStatus of campaign.senderId.carrierStatuses) {
-    const carrier = carrierStatus.carrier;
-    const recipients = validatedNumbers[carrier] ?? [];
-
-    if (carrierStatus.status !== "APPROVED" || !carrierStatus.approvedShortcode) {
-      continue; // not approved on this carrier — skip entirely
-    }
-    if (recipients.length === 0) continue;
-
-    batches.push({ carrier, shortCode: carrierStatus.approvedShortcode, recipients });
-  }
-
-  if (batches.length === 0) {
+  const eligibleBatches = computeEligibleCarrierBatches(campaign);
+  if (eligibleBatches.length === 0) {
     return NextResponse.json(
       { error: "No approved carriers with valid recipients to send to" },
       { status: 409 }
@@ -79,8 +73,8 @@ export async function POST(req: NextRequest) {
   // Mark approved atomically, guarded on current status — same pattern as
   // the wallet reservation fixes. Prevents two concurrent approve requests
   // for the same campaign from both passing the status check and causing a
-  // duplicate send to Mesaj (which would double-charge the client AND send
-  // the same message twice to their customers).
+  // duplicate send chain to start (which would double-charge the client
+  // AND send the same messages twice to their customers).
   const claimed = await prisma.campaign.updateMany({
     where: { id: campaign.id, status: "PENDING_APPROVAL" },
     data: {
@@ -93,119 +87,20 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Campaign was already processed by another request" }, { status: 409 });
   }
 
-  let sendResults;
-  try {
-    sendResults = await sendCampaignAcrossCarriers(campaign.messageBody, batches);
-  } catch (err) {
-    // The campaign is already APPROVED and funds already reserved at this
-    // point — a throw here (e.g. MESAJ_API_TOKEN missing/expired) means
-    // zero messages went out. Without this, the campaign would be stuck
-    // APPROVED forever with the client's wallet short for a send that
-    // never happened. Mark it FAILED and refund in full, then surface a
-    // 502 so whoever/whatever triggered this knows it didn't just work.
-    await handleCampaignSendFailure({
-      campaignId: campaign.id,
-      tenantId: campaign.tenantId,
-      recipientCount: campaign.recipientCount,
-      error: err,
-    });
-    return NextResponse.json(
-      { error: "Send failed before reaching Mesaj — campaign marked FAILED and funds refunded in full." },
-      { status: 502 }
-    );
-  }
-
-  let totalSent = 0;
-  for (const r of sendResults) {
-    const carrierBatch = await prisma.campaignCarrierBatch.create({
-      data: {
-        campaignId: campaign.id,
-        carrier: r.carrier,
-        shortcodeUsed: r.shortCode,
-        recipientCount: r.recipientCount,
-        mesajResponseStatus: batchStatusFromResult(r.result),
-        mesajResponseRaw: JSON.stringify(r.result.raw),
-        sentAt: new Date(),
-      },
-    });
-    await recordMessageRecipients({
-      campaignId: campaign.id,
-      carrierBatchId: carrierBatch.id,
-      tenantId: campaign.tenantId,
-      carrier: r.carrier,
-      shortCode: r.shortCode,
-      recipientResults: r.result.recipientResults,
-    });
-    totalSent += r.result.sentRecipients.length;
-  }
-
-  await prisma.campaign.update({
-    where: { id: campaign.id },
-    // Only every carrier batch failing should read as FAILED — a partial
-    // send (some recipients got it, some didn't) still counts as SENT
-    // overall; the per-carrier breakdown in CampaignCarrierBatch is where
-    // that nuance lives.
-    data: { status: totalSent > 0 ? "SENT" : "FAILED" },
-  });
-
-  if (totalSent === 0) {
-    // Every carrier batch failed — nothing reached a recipient despite the
-    // campaign being approved with valid, previously-validated numbers.
-    // This usually means Mesaj itself is down/erroring, not a one-off bad
-    // number, and it's worth someone finding out immediately rather than
-    // only when a client complains their campaign never arrived.
-    Sentry.captureMessage("Campaign fully failed to send — every carrier batch failed", {
-      level: "error",
-      extra: {
-        campaignId: campaign.id,
-        tenantId: campaign.tenantId,
-        carriersAttempted: batches.map((b) => b.carrier),
-        recipientCount: campaign.recipientCount,
-        sendResults: sendResults.map((r) => ({ carrier: r.carrier, error: r.result.error })),
-      },
-    });
-  }
-
-  // Funds for this campaign were already reserved (deducted) at submit time,
-  // based on recipientCount. Now that we know how many actually sent
-  // successfully, refund the difference if any carrier batch failed.
-  const reservedCost = campaign.recipientCount * PRICE_PER_SMS;
-  const actualCost = totalSent * PRICE_PER_SMS;
-  const refund = reservedCost - actualCost;
-
-  if (refund > 0) {
-    await prisma.tenant.update({
-      where: { id: campaign.tenantId },
-      data: { walletBalance: { increment: refund } },
-    });
-    await prisma.walletTransaction.create({
-      data: {
-        tenantId: campaign.tenantId,
-        type: "REFUND",
-        amount: refund,
-        units: refund / PRICE_PER_SMS,
-      },
-    });
-  }
-
-  await notifyCampaignSent({
-    to: campaign.tenant.contactEmail,
-    businessName: campaign.tenant.businessName,
-    messageBody: campaign.messageBody,
-    recipientCount: campaign.recipientCount,
-    totalSent,
-    refundedAmount: refund > 0 ? refund : 0,
-  });
-
   await prisma.adminAuditLog.create({
     data: {
       adminId: admin.id,
       actionType: "CAMPAIGN_APPROVE",
       targetType: "Campaign",
       targetId: campaign.id,
-      notes: `Sent to ${batches.length} carrier batch(es), ${totalSent} messages sent`,
+      notes: `Approved, sending across ${eligibleBatches.length} carrier batch(es) in the background`,
     },
   });
 
-  return NextResponse.json({ status: totalSent > 0 ? "SENT" : "FAILED", totalSent, sendResults });
+  // Kick off the first carrier's send after this response is sent — see
+  // the module doc comment above for why this is a chain of separate
+  // invocations rather than one long await here.
+  after(() => processNextCampaignBatch(campaign.id));
+
+  return NextResponse.json({ status: "APPROVED", sending: true, carrierBatchesQueued: eligibleBatches.length }, { status: 202 });
 }

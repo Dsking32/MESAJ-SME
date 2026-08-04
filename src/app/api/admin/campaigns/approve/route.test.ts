@@ -1,73 +1,52 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 
+vi.mock("next/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("next/server")>();
+  // Run the after() callback immediately (and await it) so tests can
+  // assert on its side effects without a separate flush step. Real
+  // Next.js defers it until after the response is sent — that ordering
+  // doesn't matter for what these tests check (that the right work was
+  // scheduled with the right arguments).
+  return { ...actual, after: vi.fn((cb: () => unknown) => cb()) };
+});
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    user: { findUnique: vi.fn() },
-    campaign: { findUnique: vi.fn(), updateMany: vi.fn(), update: vi.fn() },
-    campaignCarrierBatch: { create: vi.fn() },
-    tenant: { update: vi.fn() },
-    walletTransaction: { create: vi.fn() },
+    campaign: { findUnique: vi.fn(), updateMany: vi.fn() },
     adminAuditLog: { create: vi.fn() },
   },
 }));
-vi.mock("@/lib/supabase/server", () => ({
-  createClient: vi.fn(),
+vi.mock("@/lib/adminAuth", () => ({
+  requireAdminApi: vi.fn(),
 }));
 vi.mock("@/lib/rateLimit", () => ({
   checkRateLimit: vi.fn(),
   rateLimitResponse: vi.fn(() => new Response(JSON.stringify({ error: "rate limited" }), { status: 429 })),
   RATE_LIMITS: { ADMIN_SEND: { limit: 30, windowMs: 60_000 } },
 }));
-vi.mock("@/lib/mesajClient", () => ({
-  sendCampaignAcrossCarriers: vi.fn(),
-  batchStatusFromResult: vi.fn((result: { failedRecipients: string[]; sentRecipients: string[] }) => {
-    if (result.failedRecipients.length === 0) return "SUCCESS";
-    if (result.sentRecipients.length === 0) return "FAILED";
-    return "PARTIAL";
-  }),
-}));
-vi.mock("@/lib/notifications", () => ({
-  notifyCampaignSent: vi.fn(),
-}));
-vi.mock("@/lib/messageRecipients", () => ({
-  recordMessageRecipients: vi.fn(),
-}));
-vi.mock("@sentry/nextjs", () => ({
-  captureMessage: vi.fn(),
+vi.mock("@/lib/campaignSendProcessor", () => ({
+  computeEligibleCarrierBatches: vi.fn(),
+  processNextCampaignBatch: vi.fn(),
 }));
 
 import { POST } from "./route";
+import { after } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { createClient } from "@/lib/supabase/server";
+import { requireAdminApi } from "@/lib/adminAuth";
 import { checkRateLimit } from "@/lib/rateLimit";
-import { sendCampaignAcrossCarriers } from "@/lib/mesajClient";
-import { notifyCampaignSent } from "@/lib/notifications";
-import { recordMessageRecipients } from "@/lib/messageRecipients";
-import * as Sentry from "@sentry/nextjs";
+import { computeEligibleCarrierBatches, processNextCampaignBatch } from "@/lib/campaignSendProcessor";
 
 const mockedPrisma = vi.mocked(prisma, { deep: true });
-const mockedCreateClient = vi.mocked(createClient);
+const mockedRequireAdminApi = vi.mocked(requireAdminApi);
 const mockedCheckRateLimit = vi.mocked(checkRateLimit);
-const mockedSendCampaign = vi.mocked(sendCampaignAcrossCarriers);
-const mockedNotify = vi.mocked(notifyCampaignSent);
-const mockedRecordMessageRecipients = vi.mocked(recordMessageRecipients);
-const mockedCaptureMessage = vi.mocked(Sentry.captureMessage);
+const mockedComputeEligible = vi.mocked(computeEligibleCarrierBatches);
+const mockedProcessNext = vi.mocked(processNextCampaignBatch);
+const mockedAfter = vi.mocked(after);
 
-const ADMIN_USER = { id: "admin-1", role: "ADMIN" };
+const ADMIN = { id: "admin-1", role: "ADMIN" };
 
-function mockAdmin(authenticated: boolean, isAdmin = true) {
-  mockedCreateClient.mockResolvedValue({
-    auth: {
-      getUser: vi.fn(async () => ({
-        data: { user: authenticated ? { id: "auth-admin-1" } : null },
-      })),
-    },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  } as any);
-  mockedPrisma.user.findUnique.mockResolvedValue(
-    authenticated ? (isAdmin ? (ADMIN_USER as never) : ({ id: "user-1", role: "CLIENT" } as never)) : null
-  );
+function mockAdminOk() {
+  mockedRequireAdminApi.mockResolvedValue({ ok: true, admin: ADMIN } as never);
 }
 
 function postRequest(body: unknown): NextRequest {
@@ -78,46 +57,33 @@ function postRequest(body: unknown): NextRequest {
   });
 }
 
-const APPROVED_SENDER_ID = {
-  carrierStatuses: [
-    { carrier: "MTN", status: "APPROVED", approvedShortcode: "MYBIZ" },
-    { carrier: "AIRTEL", status: "PENDING", approvedShortcode: null },
-  ],
-};
-
-const TENANT = {
-  id: "tenant-1",
-  contactEmail: "biz@example.com",
-  businessName: "Test Biz",
-};
-
-const BASE_CAMPAIGN = {
+const PENDING_CAMPAIGN = {
   id: "campaign-1",
   tenantId: "tenant-1",
   status: "PENDING_APPROVAL",
-  messageBody: "20% off this weekend!",
-  recipientCount: 10,
-  validatedNumbersJson: JSON.stringify({ MTN: Array(10).fill("2348030000000"), AIRTEL: [], GLO: [], MOBILE9: [] }),
-  senderId: APPROVED_SENDER_ID,
-  tenant: TENANT,
+  senderId: { carrierStatuses: [{ carrier: "MTN", status: "APPROVED", approvedShortcode: "MYBIZ" }] },
 };
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockedCheckRateLimit.mockResolvedValue({ allowed: true, limit: 30, remaining: 29, resetAt: new Date() });
   mockedPrisma.campaign.updateMany.mockResolvedValue({ count: 1 } as never);
-  mockedPrisma.campaignCarrierBatch.create.mockResolvedValue({ id: "batch-1" } as never);
+  mockedComputeEligible.mockReturnValue([{ carrier: "MTN", shortCode: "MYBIZ", recipients: ["234800000000"] }] as never);
 });
 
 describe("POST /api/admin/campaigns/approve", () => {
-  it("returns 403 for a non-admin user", async () => {
-    mockAdmin(true, false);
+  it("returns the auth response for a non-admin/unauthenticated caller", async () => {
+    mockedRequireAdminApi.mockResolvedValue({
+      ok: false,
+      response: new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 }),
+    } as never);
+
     const res = await POST(postRequest({ campaignId: "campaign-1" }));
     expect(res.status).toBe(403);
   });
 
   it("returns 429 when rate limited, before touching the campaign", async () => {
-    mockAdmin(true);
+    mockAdminOk();
     mockedCheckRateLimit.mockResolvedValue({ allowed: false, limit: 30, remaining: 0, resetAt: new Date() });
 
     const res = await POST(postRequest({ campaignId: "campaign-1" }));
@@ -126,99 +92,63 @@ describe("POST /api/admin/campaigns/approve", () => {
     expect(mockedPrisma.campaign.findUnique).not.toHaveBeenCalled();
   });
 
-  it("sends a fully successful campaign, refunds nothing, and notifies with no refund mentioned", async () => {
-    mockAdmin(true);
-    mockedPrisma.campaign.findUnique.mockResolvedValue(BASE_CAMPAIGN as never);
-    mockedSendCampaign.mockResolvedValue([
-      {
-        carrier: "MTN",
-        shortCode: "MYBIZ",
-        recipientCount: 10,
-        result: { success: true, sentRecipients: Array(10).fill("x"), failedRecipients: [], raw: {} },
-      },
-    ] as never);
+  it("returns 404 when the campaign doesn't exist", async () => {
+    mockAdminOk();
+    mockedPrisma.campaign.findUnique.mockResolvedValue(null);
 
-    const res = await POST(postRequest({ campaignId: "campaign-1" }));
-    const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(body.status).toBe("SENT");
-    expect(body.totalSent).toBe(10);
-    expect(mockedPrisma.tenant.update).not.toHaveBeenCalled(); // no refund
-    expect(mockedNotify).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "biz@example.com", totalSent: 10, recipientCount: 10, refundedAmount: 0 })
-    );
-    expect(mockedCaptureMessage).not.toHaveBeenCalled();
+    const res = await POST(postRequest({ campaignId: "nope" }));
+    expect(res.status).toBe(404);
   });
 
-  it("refunds the shortfall and notifies as a partial send when some recipients fail", async () => {
-    mockAdmin(true);
-    mockedPrisma.campaign.findUnique.mockResolvedValue(BASE_CAMPAIGN as never);
-    mockedSendCampaign.mockResolvedValue([
-      {
-        carrier: "MTN",
-        shortCode: "MYBIZ",
-        recipientCount: 10,
-        result: {
-          success: false,
-          sentRecipients: Array(6).fill("x"),
-          failedRecipients: Array(4).fill("y"),
-          raw: {},
-        },
-      },
-    ] as never);
+  it("returns 409 when the campaign isn't PENDING_APPROVAL", async () => {
+    mockAdminOk();
+    mockedPrisma.campaign.findUnique.mockResolvedValue({ ...PENDING_CAMPAIGN, status: "SENT" } as never);
 
     const res = await POST(postRequest({ campaignId: "campaign-1" }));
-    const body = await res.json();
-
-    expect(res.status).toBe(200);
-    expect(body.status).toBe("SENT"); // partial still counts as SENT overall
-    expect(body.totalSent).toBe(6);
-    expect(mockedPrisma.tenant.update).toHaveBeenCalled(); // refund for the 4 that failed
-    expect(mockedNotify).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "biz@example.com", totalSent: 6, recipientCount: 10, refundedAmount: expect.any(Number) })
-    );
-    const refundedAmount = mockedNotify.mock.calls[0][0].refundedAmount;
-    expect(refundedAmount).toBeGreaterThan(0);
-    expect(mockedCaptureMessage).not.toHaveBeenCalled();
+    expect(res.status).toBe(409);
   });
 
-  it("refunds the full amount and notifies as a total failure when every carrier batch fails", async () => {
-    mockAdmin(true);
-    mockedPrisma.campaign.findUnique.mockResolvedValue(BASE_CAMPAIGN as never);
-    mockedSendCampaign.mockResolvedValue([
-      {
-        carrier: "MTN",
-        shortCode: "MYBIZ",
-        recipientCount: 10,
-        result: { success: false, sentRecipients: [], failedRecipients: Array(10).fill("y"), raw: {} },
-      },
-    ] as never);
+  it("returns 409 when no carrier is both approved and has valid recipients", async () => {
+    mockAdminOk();
+    mockedPrisma.campaign.findUnique.mockResolvedValue(PENDING_CAMPAIGN as never);
+    mockedComputeEligible.mockReturnValue([]);
 
     const res = await POST(postRequest({ campaignId: "campaign-1" }));
-    const body = await res.json();
 
-    expect(res.status).toBe(200);
-    expect(body.status).toBe("FAILED");
-    expect(body.totalSent).toBe(0);
-    expect(mockedNotify).toHaveBeenCalledWith(
-      expect.objectContaining({ to: "biz@example.com", totalSent: 0, recipientCount: 10 })
-    );
-    expect(mockedCaptureMessage).toHaveBeenCalledWith(
-      "Campaign fully failed to send — every carrier batch failed",
-      expect.objectContaining({ level: "error", extra: expect.objectContaining({ campaignId: "campaign-1" }) })
-    );
+    expect(res.status).toBe(409);
+    expect(mockedPrisma.campaign.updateMany).not.toHaveBeenCalled();
   });
 
-  it("returns 409 if the campaign was already processed by a concurrent request", async () => {
-    mockAdmin(true);
-    mockedPrisma.campaign.findUnique.mockResolvedValue(BASE_CAMPAIGN as never);
+  it("returns 409 if a concurrent request already claimed the campaign", async () => {
+    mockAdminOk();
+    mockedPrisma.campaign.findUnique.mockResolvedValue(PENDING_CAMPAIGN as never);
     mockedPrisma.campaign.updateMany.mockResolvedValue({ count: 0 } as never);
 
     const res = await POST(postRequest({ campaignId: "campaign-1" }));
 
     expect(res.status).toBe(409);
-    expect(mockedSendCampaign).not.toHaveBeenCalled();
-    expect(mockedNotify).not.toHaveBeenCalled();
+    expect(mockedAfter).not.toHaveBeenCalled();
+    expect(mockedProcessNext).not.toHaveBeenCalled();
+  });
+
+  it("claims the campaign, logs it, schedules the send chain via after(), and returns 202 without waiting for it", async () => {
+    mockAdminOk();
+    mockedPrisma.campaign.findUnique.mockResolvedValue(PENDING_CAMPAIGN as never);
+
+    const res = await POST(postRequest({ campaignId: "campaign-1" }));
+    const body = await res.json();
+
+    expect(res.status).toBe(202);
+    expect(body.status).toBe("APPROVED");
+    expect(body.sending).toBe(true);
+    expect(mockedPrisma.campaign.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "campaign-1", status: "PENDING_APPROVAL" },
+        data: expect.objectContaining({ status: "APPROVED", reviewedByAdminId: "admin-1" }),
+      })
+    );
+    expect(mockedPrisma.adminAuditLog.create).toHaveBeenCalled();
+    expect(mockedAfter).toHaveBeenCalledWith(expect.any(Function));
+    expect(mockedProcessNext).toHaveBeenCalledWith("campaign-1");
   });
 });

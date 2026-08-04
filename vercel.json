@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/process-stuck-campaign-sends",
+      "schedule": "0 3 * * *"
+    }
+  ]
+}

@@ -44,7 +44,12 @@ const RECOMMENDED_VARS: EnvVar[] = [
       "shared secret to verify inbound Mesaj delivery-report webhooks (see README — confirm the exact header/scheme with Mesaj; without this set, webhook auth is skipped entirely, which is NOT safe for production)",
   },
   { name: "PAYSTACK_SECRET_KEY", usedFor: "Paystack webhook verification + wallet funding (top-ups will fail)" },
-  { name: "NEXT_PUBLIC_APP_URL", usedFor: "Paystack callback_url after wallet top-up (top-up redirect will be broken)" },
+  { name: "NEXT_PUBLIC_APP_URL", usedFor: "Paystack callback_url after wallet top-up; also the base URL the campaign-send background chain calls back into itself (see lib/campaignSendProcessor.ts) — without it, campaign approval will claim the campaign but the send chain won't start" },
+  {
+    name: "CRON_SECRET",
+    usedFor:
+      "auth for the campaign-send background chain's internal continuation calls and the recovery cron (see lib/internalAuth.ts) — without it, /api/internal/campaigns/process-send and /api/cron/process-stuck-campaign-sends refuse every request, so approved campaigns will get stuck after their first carrier. Vercel auto-provisions this once vercel.json has a crons entry; set it manually for local dev.",
+  },
   { name: "RESEND_API_KEY", usedFor: "client email notifications — Sender ID status, campaign rejection (emails silently won't send)" },
   { name: "EMAIL_FROM", usedFor: "the From address on client notification emails (emails silently won't send)" },
   { name: "SENTRY_DSN", usedFor: "server-side error reporting (errors will happen silently — you won't know until a client reports one)" },
