@@ -6,11 +6,6 @@ on:
   pull_request:
     branches: [main]
 
-# Placeholder env vars for build/typecheck only — no real secrets needed here.
-# `prisma generate` reads DATABASE_URL from prisma.config.ts but only to know
-# the shape of the connection, not to actually connect; a well-formed but
-# fake URL is enough. Real deploy secrets (Vercel, etc.) are separate from
-# this file and are never read from here.
 env:
   DATABASE_URL: "postgresql://user:password@localhost:5432/ci_placeholder"
   NEXT_PUBLIC_SUPABASE_URL: "https://ci-placeholder.supabase.co"
@@ -22,55 +17,66 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
       - run: npm ci
+
       - run: npm run lint
 
   typecheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
       - run: npm ci
+
       - run: npm run typecheck
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
       - run: npm ci
+
       - run: npm run test:coverage
 
   build:
     runs-on: ubuntu-latest
-    needs: [lint, typecheck, test]
+    needs:
+      - lint
+      - typecheck
+      - test
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
       - run: npm ci
+
       - run: npm run build
 
-  # Runs against a REAL Postgres, with real migrations applied and the real
-  # generated Prisma client — no mocks. This is what actually proves things
-  # like "two concurrent webhook deliveries can't double-credit a wallet"
-  # or "the rate limiter holds under real concurrency" — a mocked unit test
-  # can only prove the code *calls* the right function, never that the
-  # database *enforces* the guarantee.
   integration-test:
     runs-on: ubuntu-latest
+
     services:
       postgres:
         image: postgres:16
@@ -85,21 +91,20 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+
     env:
       DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci_integration"
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
       - run: npm ci
-      # Stub-only: the RLS migration's SQL functions reference auth.uid(),
-      # which only exists on real Supabase projects. This is NOT a real
-      # implementation of Supabase auth — it's the minimum needed so the
-      # migration compiles on a plain postgres:16 container. Prisma connects
-      # as the RLS-bypassing owner role either way, so this has no effect on
-      # what the integration tests actually verify.
+
       - name: Stub Supabase auth schema (auth.uid())
         run: |
           PGPASSWORD=ci psql -h localhost -U ci -d ci_integration <<'SQL'
@@ -107,8 +112,10 @@ jobs:
           CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
           LANGUAGE sql STABLE AS $$ SELECT NULL::uuid; $$;
           SQL
+
       - name: Apply real migrations to the test database
         run: npx prisma migrate deploy
+
       - run: npm run test:integration
 
   # Fails the build if schema.prisma has changes not captured by a real
@@ -118,6 +125,7 @@ jobs:
   # empty placeholder it started as.
   migration-check:
     runs-on: ubuntu-latest
+
     services:
       postgres:
         image: postgres:16
@@ -132,15 +140,17 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
       - run: npm ci
-      # Same stub as integration-test, above — the shadow DB starts empty
-      # too, and prisma migrate diff replays every migration against it.
+
       - name: Stub Supabase auth schema (auth.uid())
         run: |
           PGPASSWORD=ci psql -h localhost -U ci -d ci_shadow <<'SQL'
@@ -148,7 +158,9 @@ jobs:
           CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid
           LANGUAGE sql STABLE AS $$ SELECT NULL::uuid; $$;
           SQL
+
       - run: npx prisma validate
+
       - name: Check for schema drift not captured by a migration
         env:
           # Prisma 7 removed --shadow-database-url as a CLI flag on
@@ -162,3 +174,36 @@ jobs:
             --to-schema ./prisma/schema.prisma \
             --exit-code || \
           (echo "::error::schema.prisma has changes not captured in prisma/migrations — run 'npx prisma migrate dev' and commit the result." && exit 1)
+
+  # Applies pending migrations to production right after a push to main
+  # passes every check above. Prevents code that depends on a schema
+  # change from ever being live before the schema change itself is.
+  # Requires a GitHub Actions secret named PRODUCTION_DATABASE_URL,
+  # set to the SAME connection string used for `npx prisma migrate deploy`
+  # locally (the direct/session connection on port 5432, not the pgbouncer
+  # pooler on 6543 — migrate deploy needs an advisory lock that
+  # transaction-pooling mode doesn't support).
+  deploy-migrations:
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - typecheck
+      - test
+      - build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Deploy pending migrations to production
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: npx prisma migrate deploy
