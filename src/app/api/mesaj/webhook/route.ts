@@ -143,6 +143,33 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ received: true, matched: true, terminal: false });
   }
 
+  // Guard against out-of-order/duplicate terminal events: if this row
+  // already has a terminal outcome (DELIVERED/FAILED/EXPIRED) and a new
+  // event disagrees with it, don't blindly overwrite. Webhooks aren't
+  // guaranteed to arrive in the order the underlying events happened —
+  // a delayed/retried FAILED could land after a genuine DELIVERED already
+  // did, and silently flipping a correct DELIVERED to FAILED (or the
+  // reverse) would corrupt billing/reporting on data that was already
+  // right. Same status arriving twice (a true duplicate webhook) is fine
+  // to no-op past this guard too, since there's nothing new to write.
+  const alreadyTerminal = target.deliveryStatus !== "PENDING";
+  if (alreadyTerminal && target.deliveryStatus !== deliveryStatus) {
+    Sentry.captureMessage("Mesaj webhook: conflicting terminal status ignored", {
+      level: "warning",
+      extra: {
+        recipientId: target.id,
+        existingStatus: target.deliveryStatus,
+        incomingStatus: deliveryStatus,
+        event: body.event,
+      },
+    });
+    return NextResponse.json({ received: true, matched: true, terminal: true, applied: false });
+  }
+  if (alreadyTerminal) {
+    // Same terminal status arriving again — true duplicate, nothing to do.
+    return NextResponse.json({ received: true, matched: true, terminal: true, applied: false });
+  }
+
   await prisma.messageRecipient.update({
     where: { id: target.id },
     data: {
@@ -160,5 +187,5 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  return NextResponse.json({ received: true, matched: true, terminal: true });
+  return NextResponse.json({ received: true, matched: true, terminal: true, applied: true });
 }
