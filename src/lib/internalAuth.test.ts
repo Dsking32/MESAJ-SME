@@ -39,6 +39,16 @@ describe("verifyInternalSecret", () => {
     expect(result?.status).toBe(401);
   });
 
+  it("returns 401 for a same-length wrong guess (exercises the timingSafeEqual path, not just the length check)", () => {
+    process.env.CRON_SECRET = "test-secret";
+
+    // Same length as "test-secret" — the length-mismatch fast path can't
+    // short-circuit this one, so this actually calls timingSafeEqual.
+    const result = verifyInternalSecret(requestWithAuth("Bearer test-secre1"));
+
+    expect(result?.status).toBe(401);
+  });
+
   it("returns null (allowed) when the header matches exactly", () => {
     process.env.CRON_SECRET = "test-secret";
 

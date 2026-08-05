@@ -7,7 +7,7 @@ vi.mock("@sentry/nextjs", () => ({
 vi.mock("./prisma", () => ({
   prisma: {
     campaign: { findUnique: vi.fn(), update: vi.fn() },
-    campaignCarrierBatch: { create: vi.fn() },
+    campaignCarrierBatch: { create: vi.fn(), update: vi.fn() },
     messageRecipient: { count: vi.fn() },
     tenant: { update: vi.fn() },
     walletTransaction: { create: vi.fn() },
@@ -86,6 +86,12 @@ beforeEach(() => {
       id: `batch-${data.carrier}`,
       ...data,
     })) as unknown as typeof prisma.campaignCarrierBatch.create
+  );
+  mockedPrisma.campaignCarrierBatch.update.mockImplementation(
+    (async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => ({
+      id: where.id,
+      ...data,
+    })) as unknown as typeof prisma.campaignCarrierBatch.update
   );
   global.fetch = vi.fn().mockResolvedValue(new Response("{}", { status: 200 }));
 });
@@ -210,16 +216,24 @@ describe("processNextCampaignBatch", () => {
     expect(mockedCaptureMessage).toHaveBeenCalled();
   });
 
-  it("records a FAILED batch row (no refund at this point) when a carrier throws outright, and still continues the chain", async () => {
+  it("claims the carrier as PENDING before sending, then updates it to FAILED when the send throws outright, and still continues the chain", async () => {
     mockedPrisma.campaign.findUnique.mockResolvedValue(baseCampaign() as never);
     mockedSend.mockRejectedValue(new Error("MESAJ_API_TOKEN missing"));
 
     await processNextCampaignBatch("campaign-1");
 
-    expect(mockedCaptureException).toHaveBeenCalled();
+    // The claim happens before the send is even attempted — this is what
+    // makes the CampaignCarrierBatch(campaignId, carrier) unique
+    // constraint actually prevent a double-send, not just a double DB row.
     expect(mockedPrisma.campaignCarrierBatch.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ carrier: "MTN", mesajResponseStatus: "FAILED", sentAt: null }),
+        data: expect.objectContaining({ carrier: "MTN", mesajResponseStatus: "PENDING", sentAt: null }),
+      })
+    );
+    expect(mockedCaptureException).toHaveBeenCalled();
+    expect(mockedPrisma.campaignCarrierBatch.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ mesajResponseStatus: "FAILED", sentAt: null }),
       })
     );
     // No immediate wallet touch for the thrown carrier — refund happens
@@ -228,6 +242,24 @@ describe("processNextCampaignBatch", () => {
     // Two carriers total, one just handled (via the throw path) -> one
     // remains -> chain continues.
     expect(global.fetch).toHaveBeenCalled();
+  });
+
+  it("does not call Mesaj at all when claiming the carrier loses the unique-constraint race (another invocation already has it)", async () => {
+    mockedPrisma.campaign.findUnique.mockResolvedValue(baseCampaign() as never);
+    mockedPrisma.campaignCarrierBatch.create.mockRejectedValue(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" })
+    );
+
+    await processNextCampaignBatch("campaign-1");
+
+    // This is the actual guarantee the fix provides: a lost claim race
+    // must stop BEFORE the real send, since sendCampaignAcrossCarriers
+    // triggers a genuine SMS through Mesaj — a duplicate call there costs
+    // real money and sends a real duplicate text, and can't be undone by
+    // anything that happens afterward.
+    expect(mockedSend).not.toHaveBeenCalled();
+    expect(mockedPrisma.campaignCarrierBatch.update).not.toHaveBeenCalled();
+    expect(mockedCaptureException).not.toHaveBeenCalled();
   });
 
   it("swallows an unexpected top-level error (e.g. a DB read failure) without touching campaign status or the wallet", async () => {

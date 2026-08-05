@@ -1,0 +1,20 @@
+-- Guards against a concurrency race in campaignSendProcessor.ts: two
+-- overlapping invocations of processNextCampaignBatch for the same
+-- campaign (e.g. the recovery cron picking up a chain that's actually
+-- still running, just slow, rather than truly stalled) could otherwise
+-- both see the same carrier as "not yet processed" and both send to it —
+-- a real duplicate SMS send, silently, with no error surfaced anywhere.
+--
+-- This unique constraint makes the second CampaignCarrierBatch.create()
+-- for the same (campaignId, carrier) fail with a unique-constraint
+-- violation instead of succeeding — processSingleCarrierBatch (see
+-- src/lib/campaignSendProcessor.ts) catches that specific error and
+-- treats it as "another invocation already claimed this carrier, skip,"
+-- rather than letting the send go through twice.
+--
+-- Safe to add now: normal operation already creates at most one
+-- CampaignCarrierBatch row per campaign+carrier (processSingleCarrierBatch
+-- is only ever called with a single carrier per invocation), so this
+-- constraint doesn't change any legitimate existing behavior — it only
+-- rejects the double-send race that shouldn't have been possible anyway.
+CREATE UNIQUE INDEX "CampaignCarrierBatch_campaignId_carrier_key" ON "CampaignCarrierBatch"("campaignId", "carrier");

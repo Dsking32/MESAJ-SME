@@ -248,6 +248,15 @@ model CampaignCarrierBatch {
 
   recipients MessageRecipient[]
 
+  // Guards against a concurrency race in campaignSendProcessor.ts: two
+  // overlapping invocations of processNextCampaignBatch for the same
+  // campaign (e.g. the recovery cron picking up a chain that's actually
+  // still running, just slow) could otherwise both see the same carrier
+  // as "not yet processed" and both send to it — a real duplicate SMS
+  // send with no error. This constraint makes the second create() fail
+  // with P2022/unique-violation instead, which processSingleCarrierBatch
+  // treats as "someone else already claimed this carrier" and skips.
+  @@unique([campaignId, carrier])
   @@index([campaignId])
 }
 

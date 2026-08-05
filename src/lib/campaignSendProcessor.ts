@@ -5,6 +5,7 @@ import type { Carrier } from "./numbers";
 import { PRICE_PER_SMS } from "./pricing";
 import { notifyCampaignSent } from "./notifications";
 import { recordMessageRecipients } from "./messageRecipients";
+import { isUniqueConstraintViolation } from "./prismaErrors";
 
 /**
  * Resumable campaign sending.
@@ -124,6 +125,35 @@ async function triggerNextBatch(campaignId: string): Promise<void> {
  * why doing it there instead, once, is what avoids a double-refund.
  */
 async function processSingleCarrierBatch(campaign: CampaignWithSendContext, next: CarrierBatchInput): Promise<void> {
+  // Claim this carrier BEFORE calling Mesaj — not after. The unique
+  // constraint on CampaignCarrierBatch(campaignId, carrier) (see
+  // schema.prisma) only helps if the claim happens before the real send;
+  // claiming afterwards would still let two concurrent invocations (e.g.
+  // the recovery cron overlapping a chain that's actually just slow, not
+  // truly stalled) both call Mesaj for the same carrier before either
+  // wrote a row. If this create() loses the race, bail out here — nothing
+  // has been sent yet, so there's nothing to undo.
+  let claimedBatch;
+  try {
+    claimedBatch = await prisma.campaignCarrierBatch.create({
+      data: {
+        campaignId: campaign.id,
+        carrier: next.carrier,
+        shortcodeUsed: next.shortCode,
+        recipientCount: next.recipients.length,
+        mesajResponseStatus: "PENDING",
+        sentAt: null,
+      },
+    });
+  } catch (err) {
+    if (isUniqueConstraintViolation(err)) {
+      // Another invocation already claimed and is handling (or already
+      // finished) this carrier — not an error, just nothing left to do.
+      return;
+    }
+    throw err;
+  }
+
   let sendResults;
   try {
     sendResults = await sendCampaignAcrossCarriers(campaign.messageBody, [next]);
@@ -133,12 +163,9 @@ async function processSingleCarrierBatch(campaign: CampaignWithSendContext, next
       tags: { area: "campaign-send-processor" },
       extra: { campaignId: campaign.id, carrier: next.carrier },
     });
-    await prisma.campaignCarrierBatch.create({
+    await prisma.campaignCarrierBatch.update({
+      where: { id: claimedBatch.id },
       data: {
-        campaignId: campaign.id,
-        carrier: next.carrier,
-        shortcodeUsed: next.shortCode,
-        recipientCount: next.recipients.length,
         mesajResponseStatus: "FAILED",
         mesajResponseRaw: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
         sentAt: null,
@@ -147,27 +174,25 @@ async function processSingleCarrierBatch(campaign: CampaignWithSendContext, next
     return;
   }
 
-  for (const r of sendResults) {
-    const carrierBatch = await prisma.campaignCarrierBatch.create({
-      data: {
-        campaignId: campaign.id,
-        carrier: r.carrier,
-        shortcodeUsed: r.shortCode,
-        recipientCount: r.recipientCount,
-        mesajResponseStatus: batchStatusFromResult(r.result),
-        mesajResponseRaw: JSON.stringify(r.result.raw),
-        sentAt: new Date(),
-      },
-    });
-    await recordMessageRecipients({
-      campaignId: campaign.id,
-      carrierBatchId: carrierBatch.id,
-      tenantId: campaign.tenantId,
-      carrier: r.carrier,
-      shortCode: r.shortCode,
-      recipientResults: r.result.recipientResults,
-    });
-  }
+  // sendCampaignAcrossCarriers is called with exactly one input batch
+  // ([next]) here, so it always returns exactly one result for it.
+  const [r] = sendResults;
+  await prisma.campaignCarrierBatch.update({
+    where: { id: claimedBatch.id },
+    data: {
+      mesajResponseStatus: batchStatusFromResult(r.result),
+      mesajResponseRaw: JSON.stringify(r.result.raw),
+      sentAt: new Date(),
+    },
+  });
+  await recordMessageRecipients({
+    campaignId: campaign.id,
+    carrierBatchId: claimedBatch.id,
+    tenantId: campaign.tenantId,
+    carrier: r.carrier,
+    shortCode: r.shortCode,
+    recipientResults: r.result.recipientResults,
+  });
 }
 
 /**

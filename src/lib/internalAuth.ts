@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
 
 /**
  * Auth for routes that are never hit by a browser — the internal
@@ -26,8 +27,24 @@ export function verifyInternalSecret(req: NextRequest): NextResponse | null {
     return NextResponse.json({ error: "Server not configured for internal requests" }, { status: 503 });
   }
 
-  const authHeader = req.headers.get("authorization");
-  if (authHeader !== `Bearer ${expected}`) {
+  // Timing-safe comparison — same reasoning as the Paystack webhook's
+  // signature check (see /api/wallet/paystack/webhook): a plain `!==`
+  // string comparison returns as soon as it finds a mismatched byte,
+  // which leaks how many leading characters of the guess were correct via
+  // response-time differences. CRON_SECRET is a long-lived bearer secret
+  // an attacker gets unlimited guesses against, so it's worth the same
+  // care as a webhook signature. timingSafeEqual requires equal-length
+  // buffers, so that's checked first — a wrong-length header is just a
+  // mismatch, not a crash.
+  const authHeader = req.headers.get("authorization") ?? "";
+  const expectedHeader = `Bearer ${expected}`;
+  const providedBuffer = Buffer.from(authHeader, "utf8");
+  const expectedBuffer = Buffer.from(expectedHeader, "utf8");
+  const valid =
+    providedBuffer.length === expectedBuffer.length &&
+    crypto.timingSafeEqual(providedBuffer, expectedBuffer);
+
+  if (!valid) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
