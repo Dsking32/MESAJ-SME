@@ -52,10 +52,19 @@ interface MesajWebhookPayload {
   };
 }
 
-function toDeliveryStatus(status: string): "DELIVERED" | "FAILED" | "EXPIRED" {
+// Mesaj calls this webhook multiple times over a message's lifecycle —
+// e.g. SMS_SENT first ("handed to carrier, outcome unknown yet"), then
+// later SMS_DELIVERED or a failure event with the real terminal outcome.
+// Our DeliveryStatus enum only models PENDING/DELIVERED/FAILED/EXPIRED —
+// there's no "in transit" state — so any non-terminal status (SENT,
+// QUEUED, etc.) must be ignored here rather than folded into FAILED.
+// Returning null means "no terminal outcome yet, leave the row as PENDING
+// and wait for a later webhook call."
+function toDeliveryStatus(status: string): "DELIVERED" | "FAILED" | "EXPIRED" | null {
   if (status === "DELIVERED") return "DELIVERED";
   if (status === "EXPIRED") return "EXPIRED";
-  return "FAILED"; // covers FAILED, UNDELIVERED, or any status we don't explicitly recognize
+  if (status === "SENT" || status === "QUEUED" || status === "PENDING") return null;
+  return "FAILED"; // covers FAILED, UNDELIVERED, REJECTED, or any status we don't explicitly recognize
 }
 
 export async function POST(req: NextRequest) {
@@ -127,6 +136,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ received: true, matched: false });
   }
 
+  // Non-terminal status (e.g. SMS_SENT): acknowledge receipt but leave the
+  // row as-is. Overwriting it here would clobber whatever terminal status
+  // a later webhook call sets, and there's nothing meaningful to record yet.
+  if (deliveryStatus === null) {
+    return NextResponse.json({ received: true, matched: true, terminal: false });
+  }
+
   await prisma.messageRecipient.update({
     where: { id: target.id },
     data: {
@@ -144,5 +160,5 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  return NextResponse.json({ received: true, matched: true });
+  return NextResponse.json({ received: true, matched: true, terminal: true });
 }
