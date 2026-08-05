@@ -18,7 +18,6 @@ const mockedPrisma = vi.mocked(prisma, { deep: true });
 const mockedCaptureMessage = vi.mocked(Sentry.captureMessage);
 
 const ORIGINAL_SECRET = process.env.MESAJ_WEBHOOK_SECRET;
-const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
 
 function webhookRequest(body: unknown, query = ""): NextRequest {
   return new NextRequest(`https://example.test/api/mesaj/webhook${query}`, {
@@ -70,14 +69,14 @@ const PENDING_ROW = {
 beforeEach(() => {
   vi.clearAllMocks();
   process.env.MESAJ_WEBHOOK_SECRET = "test-secret";
-  process.env.NODE_ENV = "test";
+  vi.stubEnv("NODE_ENV", "test");
   mockedPrisma.messageRecipient.findUnique.mockResolvedValue(null);
   mockedPrisma.messageRecipient.findFirst.mockResolvedValue(null);
 });
 
 afterEach(() => {
   process.env.MESAJ_WEBHOOK_SECRET = ORIGINAL_SECRET;
-  process.env.NODE_ENV = ORIGINAL_NODE_ENV;
+  vi.unstubAllEnvs();
 });
 
 describe("POST /api/mesaj/webhook — auth", () => {
@@ -99,7 +98,7 @@ describe("POST /api/mesaj/webhook — auth", () => {
 
   it("fails closed with 503 in production when MESAJ_WEBHOOK_SECRET isn't configured", async () => {
     delete process.env.MESAJ_WEBHOOK_SECRET;
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
 
     const res = await POST(webhookRequest(payload()));
 
@@ -109,7 +108,7 @@ describe("POST /api/mesaj/webhook — auth", () => {
 
   it("passes through unauthenticated outside production when the secret isn't configured (local dev)", async () => {
     delete process.env.MESAJ_WEBHOOK_SECRET;
-    process.env.NODE_ENV = "test";
+    vi.stubEnv("NODE_ENV", "test");
     mockedPrisma.messageRecipient.findUnique.mockResolvedValue(PENDING_ROW as never);
 
     const res = await POST(webhookRequest(payload()));
