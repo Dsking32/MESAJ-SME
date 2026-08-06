@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Bookmark, CheckCircle2, Repeat2, Upload, XCircle } from "lucide-react";
 import { getSegmentInfo } from "@/lib/smsSegments";
 import { parseNumbersFromCsv } from "@/lib/numbers";
@@ -64,6 +64,12 @@ export default function ComposeForm({
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Synchronous guard against a true double-invocation of
+  // handleAgreeAndSend (e.g. a double-click landing before the
+  // `submitting` state has re-rendered the button as disabled) — React
+  // state updates aren't synchronous within the same tick, so `submitting`
+  // alone can't fully close that window, but a ref check-and-set can.
+  const submitInFlightRef = useRef(false);
 
   const [savedMessages, setSavedMessages] = useState(initialSavedMessages);
   const [savingMessage, setSavingMessage] = useState(false);
@@ -213,12 +219,29 @@ export default function ComposeForm({
   }
 
   async function handleAgreeAndSend() {
+    // Belt-and-suspenders: closes the same-tick double-click window that
+    // `submitting`/disabled-while-submitting alone can't, since React state
+    // isn't synchronous. This creates a real, billed campaign — worth the
+    // two extra lines.
+    if (submitInFlightRef.current) return;
+    submitInFlightRef.current = true;
     setSubmitting(true);
     setError(null);
+
+    // A fresh key per submit attempt. This isn't primarily about the
+    // double-click case above (the ref guard already handles that) — it's
+    // about a lower-level network retry of this exact fetch (a flaky
+    // connection, a proxy retrying a dropped response, etc.) landing twice
+    // at the server with identical headers. The server's idempotency check
+    // (see /api/campaigns/submit) then recognizes the retry and returns
+    // the original campaign instead of creating a second one and
+    // reserving wallet funds twice.
+    const idempotencyKey = crypto.randomUUID();
+
     try {
       const res = await fetch("/api/campaigns/submit", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
         body: JSON.stringify({ senderId, message, numbers: parseNumbers() }),
       });
       const data = await res.json();
@@ -231,6 +254,7 @@ export default function ComposeForm({
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
       setSubmitting(false);
+      submitInFlightRef.current = false;
     }
   }
 

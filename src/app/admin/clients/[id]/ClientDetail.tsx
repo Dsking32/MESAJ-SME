@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { formatDate } from "@/lib/formatDate";
 import { parseNumbersFromCsv } from "@/lib/numbers";
@@ -71,6 +71,12 @@ function AdminComposeForm({ tenantId, senderIds }: { tenantId: string; senderIds
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
+  // Synchronous guard against a true double-invocation of handleSend (e.g.
+  // a double-click landing before the `sending` state has re-rendered the
+  // button as disabled) — React state updates aren't synchronous within
+  // the same tick, so `sending` alone can't fully close that window, but a
+  // ref check-and-set can.
+  const sendInFlightRef = useRef(false);
 
   function parseNumbers(): string[] {
     return numbersText.split(/[\n,]/).map((n) => n.trim()).filter(Boolean);
@@ -108,24 +114,54 @@ function AdminComposeForm({ tenantId, senderIds }: { tenantId: string; senderIds
   }
 
   async function handleSend() {
+    // Belt-and-suspenders: closes the same-tick double-click window that
+    // `sending`/`loading={sending}` alone can't, since React state isn't
+    // synchronous. This sends a real, billed SMS campaign — worth the two
+    // extra lines.
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
     setSending(true);
     setError(null);
-    const res = await fetch(`/api/admin/tenants/${tenantId}/campaigns/send`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ senderId, message, numbers: parseNumbers() }),
-    });
-    const data = await res.json();
-    setSending(false);
-    if (!res.ok) {
-      setError(data.error ?? "Send failed");
-      return;
+
+    // A fresh key per send attempt. This isn't primarily about the
+    // double-click case above (the ref guard already handles that) — it's
+    // about a lower-level network retry of this exact fetch (a flaky
+    // connection, a proxy retrying a dropped response, etc.) landing twice
+    // at the server with identical headers. The server's idempotency check
+    // (see /api/admin/tenants/[id]/campaigns/send) then recognizes the
+    // retry and returns the original outcome instead of sending twice.
+    const idempotencyKey = crypto.randomUUID();
+
+    try {
+      const res = await fetch(`/api/admin/tenants/${tenantId}/campaigns/send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify({ senderId, message, numbers: parseNumbers() }),
+      });
+      const data = await res.json();
+
+      if (res.status === 202) {
+        // IN_PROGRESS: the server found this exact attempt already underway
+        // (a genuine concurrent request) rather than a clean success or
+        // failure — nothing to retry, just wait and check the campaign list.
+        setError(null);
+        setResult("Send already in progress — refresh in a moment to see the result.");
+        router.refresh();
+        return;
+      }
+      if (!res.ok) {
+        setError(data.error ?? "Send failed");
+        return;
+      }
+      setResult(`Sent to ${data.totalSent} recipients.`);
+      setValidation(null);
+      setMessage("");
+      setNumbersText("");
+      router.refresh();
+    } finally {
+      setSending(false);
+      sendInFlightRef.current = false;
     }
-    setResult(`Sent to ${data.totalSent} recipients.`);
-    setValidation(null);
-    setMessage("");
-    setNumbersText("");
-    router.refresh();
   }
 
   return (
