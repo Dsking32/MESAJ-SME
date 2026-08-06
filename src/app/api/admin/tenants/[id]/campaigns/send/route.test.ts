@@ -6,9 +6,11 @@ vi.mock("@/lib/prisma", () => ({
     tenant: { findUnique: vi.fn(), updateMany: vi.fn(), update: vi.fn() },
     senderId: { findFirst: vi.fn() },
     walletTransaction: { create: vi.fn() },
-    campaign: { create: vi.fn(), update: vi.fn() },
+    campaign: { create: vi.fn(), update: vi.fn(), findFirst: vi.fn() },
     campaignCarrierBatch: { create: vi.fn() },
+    messageRecipient: { count: vi.fn() },
     adminAuditLog: { create: vi.fn() },
+    $transaction: vi.fn(),
   },
 }));
 vi.mock("@/lib/adminAuth", () => ({
@@ -63,16 +65,32 @@ function mockAdminOk() {
   mockedRequireAdminApi.mockResolvedValue({ ok: true, admin: ADMIN } as never);
 }
 
-function sendRequest(body: unknown): NextRequest {
+function sendRequest(body: unknown, idempotencyKey?: string): NextRequest {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (idempotencyKey) headers["Idempotency-Key"] = idempotencyKey;
   return new NextRequest("https://example.test/api/admin/tenants/tenant-1/campaigns/send", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
 }
 
-function callRoute(body: unknown) {
-  return POST(sendRequest(body), { params: Promise.resolve({ id: "tenant-1" }) });
+function callRoute(body: unknown, idempotencyKey?: string) {
+  return POST(sendRequest(body, idempotencyKey), { params: Promise.resolve({ id: "tenant-1" }) });
+}
+
+/**
+ * $transaction here is called with a callback (not the array form), so the
+ * mock just invokes that callback with the mocked prisma object itself as
+ * `tx` — every method the route calls on `tx` (tenant.updateMany,
+ * walletTransaction.create, campaign.create) already exists as a mock on
+ * `prisma`, so this makes assertions against mockedPrisma.* work
+ * transparently whether the route called them via `prisma.x` or `tx.x`.
+ */
+function mockTransactionPassthrough() {
+  mockedPrisma.$transaction.mockImplementation(
+    ((fn: (tx: unknown) => unknown) => fn(mockedPrisma)) as unknown as typeof prisma.$transaction
+  );
 }
 
 const VALID_BODY = {
@@ -89,7 +107,9 @@ beforeEach(() => {
   mockedPrisma.senderId.findFirst.mockResolvedValue(SENDER_ID as never);
   mockedPrisma.tenant.updateMany.mockResolvedValue({ count: 1 });
   mockedPrisma.campaign.create.mockResolvedValue({ id: "campaign-1" } as never);
+  mockedPrisma.campaign.findFirst.mockResolvedValue(null); // no idempotency-key match by default
   mockedPrisma.campaignCarrierBatch.create.mockResolvedValue({ id: "batch-1" } as never);
+  mockTransactionPassthrough();
 });
 
 describe("POST /api/admin/tenants/[id]/campaigns/send — access control", () => {
@@ -190,6 +210,82 @@ describe("POST /api/admin/tenants/[id]/campaigns/send — send throws outright",
     expect(res.status).toBe(502);
     expect(mockedHandleFailure).toHaveBeenCalledWith(
       expect.objectContaining({ campaignId: "campaign-1", tenantId: "tenant-1", recipientCount: 1 })
+    );
+  });
+});
+
+describe("POST /api/admin/tenants/[id]/campaigns/send — idempotency", () => {
+  it("passes the Idempotency-Key header through to the created campaign", async () => {
+    mockedSend.mockResolvedValue([]);
+
+    await callRoute(VALID_BODY, "admin-key-1");
+
+    expect(mockedPrisma.campaign.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ idempotencyKey: "admin-key-1" }) })
+    );
+  });
+
+  it("early-exits without touching the wallet or Mesaj when a campaign already exists for this (tenant, key)", async () => {
+    mockedPrisma.campaign.findFirst.mockResolvedValue({
+      id: "campaign-existing",
+      status: "SENT",
+      recipientCount: 1,
+    } as never);
+    mockedPrisma.messageRecipient.count.mockResolvedValue(1);
+
+    const res = await callRoute(VALID_BODY, "admin-key-1");
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual(
+      expect.objectContaining({ status: "SENT", campaignId: "campaign-existing", totalSent: 1, replay: true })
+    );
+    expect(mockedPrisma.tenant.updateMany).not.toHaveBeenCalled();
+    expect(mockedSend).not.toHaveBeenCalled();
+  });
+
+  it("returns 202 IN_PROGRESS (not a fabricated outcome) when the matched campaign hasn't reached a terminal status yet", async () => {
+    mockedPrisma.campaign.findFirst.mockResolvedValue({
+      id: "campaign-existing",
+      status: "APPROVED",
+      recipientCount: 1,
+    } as never);
+
+    const res = await callRoute(VALID_BODY, "admin-key-1");
+    const json = await res.json();
+
+    expect(res.status).toBe(202);
+    expect(json.status).toBe("IN_PROGRESS");
+    expect(mockedSend).not.toHaveBeenCalled();
+  });
+
+  it("on a genuine concurrent race (unique-constraint violation from $transaction), returns the winner's outcome instead of throwing a 500", async () => {
+    mockedPrisma.$transaction.mockRejectedValue(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" })
+    );
+    mockedPrisma.campaign.findFirst.mockResolvedValue({
+      id: "campaign-winner",
+      status: "SENT",
+      recipientCount: 1,
+    } as never);
+    mockedPrisma.messageRecipient.count.mockResolvedValue(1);
+
+    const res = await callRoute(VALID_BODY, "admin-key-1");
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json).toEqual(expect.objectContaining({ campaignId: "campaign-winner", replay: true }));
+    expect(mockedSend).not.toHaveBeenCalled();
+  });
+
+  it("does not early-exit or dedupe when no Idempotency-Key header is sent (opt-in, not required)", async () => {
+    mockedSend.mockResolvedValue([]);
+
+    await callRoute(VALID_BODY); // no key
+
+    expect(mockedPrisma.campaign.findFirst).not.toHaveBeenCalled();
+    expect(mockedPrisma.campaign.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ idempotencyKey: null }) })
     );
   });
 });
