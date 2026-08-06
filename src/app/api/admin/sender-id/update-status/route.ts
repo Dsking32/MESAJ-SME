@@ -4,6 +4,9 @@ import { requireAdminApi } from "@/lib/adminAuth";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rateLimit";
 import { notifySenderIdStatusChange } from "@/lib/notifications";
 
+const VALID_CARRIERS = ["MTN", "AIRTEL", "GLO", "MOBILE9"] as const;
+const VALID_STATUSES = ["APPROVED", "REJECTED", "PENDING"] as const;
+
 /**
  * POST /api/admin/sender-id/update-status
  * Body: { senderIdId: string, carrier: "MTN"|"AIRTEL"|"GLO"|"MOBILE9",
@@ -18,6 +21,11 @@ import { notifySenderIdStatusChange } from "@/lib/notifications";
  *
  * Emails the client on every status change (see lib/notifications.ts) —
  * best-effort, never blocks or fails this response if it doesn't send.
+ *
+ * carrier/status are validated against explicit allow-lists (mirroring
+ * users/[id]/role) rather than left to Prisma's own enum validation —
+ * an invalid value used to reach the DB unchecked and throw an unhandled
+ * error instead of a clean 400.
  *
  * TODO(v1.1): replace manual entry with Mesaj's status webhook once its
  * payload/auth is understood — this is the top automation candidate.
@@ -38,15 +46,33 @@ export async function POST(req: NextRequest) {
   if (!senderIdId || !carrier || !status) {
     return NextResponse.json({ error: "senderIdId, carrier, and status are required" }, { status: 400 });
   }
+  if (!VALID_CARRIERS.includes(carrier)) {
+    return NextResponse.json({ error: `carrier must be one of: ${VALID_CARRIERS.join(", ")}` }, { status: 400 });
+  }
+  if (!VALID_STATUSES.includes(status)) {
+    return NextResponse.json({ error: `status must be one of: ${VALID_STATUSES.join(", ")}` }, { status: 400 });
+  }
   if (status === "APPROVED" && !approvedShortcode) {
     return NextResponse.json({ error: "approvedShortcode is required when status is APPROVED" }, { status: 400 });
   }
 
-  const updated = await prisma.senderIdCarrierStatus.update({
-    where: { senderIdId_carrier: { senderIdId, carrier } },
-    data: { status, approvedShortcode: status === "APPROVED" ? approvedShortcode : null },
-    include: { senderId: { include: { tenant: true } } },
-  });
+  let updated;
+  try {
+    updated = await prisma.senderIdCarrierStatus.update({
+      where: { senderIdId_carrier: { senderIdId, carrier } },
+      data: { status, approvedShortcode: status === "APPROVED" ? approvedShortcode : null },
+      include: { senderId: { include: { tenant: true } } },
+    });
+  } catch (err) {
+    // P2025: no row matches this (senderIdId, carrier) pair — an unknown
+    // Sender ID id, or a carrier that's never had a status row created for
+    // it. Report as a clean 404 rather than letting Prisma's error surface
+    // as an unhandled 500.
+    if (typeof err === "object" && err !== null && "code" in err && (err as { code: unknown }).code === "P2025") {
+      return NextResponse.json({ error: "Sender ID / carrier combination not found" }, { status: 404 });
+    }
+    throw err;
+  }
 
   await prisma.adminAuditLog.create({
     data: {

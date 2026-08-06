@@ -99,17 +99,40 @@ describe("POST /api/admin/sender-id/update-status — validation", () => {
     expect(mockedPrisma.senderIdCarrierStatus.update).not.toHaveBeenCalled();
   });
 
-  it("KNOWN GAP: an invalid status value is not validated in-app and reaches Prisma unchecked — this documents current behavior, not a design choice", async () => {
-    // Unlike the role-update route (which validates against an explicit
-    // allow-list before touching the DB), this route has no such check —
-    // a bad `status` string is only ever caught by Prisma's own enum
-    // validation, which throws rather than returning a clean 400. Worth
-    // fixing with an explicit allow-list, mirroring users/[id]/role.
+  it("rejects an invalid status value with a clean 400, without ever reaching Prisma (fixed — was previously an unhandled DB-level error)", async () => {
+    const res = await callRoute({ senderIdId: "sender-1", carrier: "MTN", status: "NOT_A_REAL_STATUS" });
+    const json = await res.json();
+
+    expect(res.status).toBe(400);
+    expect(json.error).toMatch(/status must be one of/i);
+    expect(mockedPrisma.senderIdCarrierStatus.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid carrier value with a clean 400, without ever reaching Prisma", async () => {
+    const res = await callRoute({ senderIdId: "sender-1", carrier: "NOT_A_REAL_CARRIER", status: "APPROVED", approvedShortcode: "X" });
+    const json = await res.json();
+
+    expect(res.status).toBe(400);
+    expect(json.error).toMatch(/carrier must be one of/i);
+    expect(mockedPrisma.senderIdCarrierStatus.update).not.toHaveBeenCalled();
+  });
+
+  it("returns a clean 404 (not an unhandled 500) when no row matches the (senderIdId, carrier) pair", async () => {
     mockedPrisma.senderIdCarrierStatus.update.mockRejectedValue(
-      Object.assign(new Error("Invalid enum value"), { code: "P2009" })
+      Object.assign(new Error("Record to update not found"), { code: "P2025" })
     );
 
-    await expect(callRoute({ senderIdId: "sender-1", carrier: "MTN", status: "NOT_A_REAL_STATUS" })).rejects.toThrow();
+    const res = await callRoute(VALID_BODY);
+    const json = await res.json();
+
+    expect(res.status).toBe(404);
+    expect(json.error).toMatch(/not found/i);
+  });
+
+  it("re-throws (rather than swallowing) an unrelated database error", async () => {
+    mockedPrisma.senderIdCarrierStatus.update.mockRejectedValue(new Error("connection reset"));
+
+    await expect(callRoute(VALID_BODY)).rejects.toThrow("connection reset");
   });
 });
 
