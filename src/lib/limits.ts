@@ -34,6 +34,15 @@ export const MAX_MESSAGE_CHARS = 918;
 // Max characters in a saved contact list's name.
 export const MAX_CONTACT_LIST_NAME_CHARS = 60;
 
+// CAC document upload accepted with a Sender ID request (see
+// /api/sender-id/request). Images (what clients realistically have on
+// their phone) plus PDF (what a CAC certificate downloaded from the CAC
+// portal actually is, and what a lot of clients will send regardless of
+// what's asked for) — rejecting PDF outright would just push those
+// clients to rename a .pdf to .jpg, which is worse.
+export const CAC_DOCUMENT_ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"] as const;
+export const CAC_DOCUMENT_MAX_BYTES = 10 * 1024 * 1024; // 10 MB — generous for a phone photo/scan
+
 // Max contacts accepted in a single saved contact list. Same rationale as
 // MAX_RECIPIENTS_PER_CAMPAIGN — a request-shape guard against a
 // pathologically large upload, not a realistic ceiling for a real list.

@@ -118,6 +118,18 @@ model SenderId {
   requestedName String
   createdAt     DateTime @default(now())
 
+  /// Path (not URL) of the CAC document in the private `cac-documents`
+  /// Supabase Storage bucket, e.g. "tenant_abc/senderId_xyz.pdf". Nullable
+  /// because it's only enforced going forward — see the migration's
+  /// comment. Never a public URL: admins reach the file via a short-lived
+  /// signed URL minted on demand (see /api/admin/sender-id/[id]/cac-document),
+  /// never a link baked into a page.
+  cacDocumentPath        String?
+  /// MIME type at upload time, so the admin download route can set the
+  /// right Content-Type instead of guessing from the stored path.
+  cacDocumentContentType String?
+  cacDocumentUploadedAt  DateTime?
+
   carrierStatuses SenderIdCarrierStatus[]
   campaigns       Campaign[]
 

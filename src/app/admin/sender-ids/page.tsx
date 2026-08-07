@@ -24,6 +24,7 @@ export default async function AdminSenderIdsPage() {
           requestedName: s.requestedName,
           createdAt: s.createdAt.toISOString(),
           tenant: { id: s.tenant.id, businessName: s.tenant.businessName },
+          hasCacDocument: Boolean(s.cacDocumentPath),
           carrierStatuses: s.carrierStatuses.map((cs) => ({
             carrier: cs.carrier,
             status: cs.status,

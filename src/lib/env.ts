@@ -44,6 +44,11 @@ const RECOMMENDED_VARS: EnvVar[] = [
       "shared secret to verify inbound Mesaj delivery-report webhooks (see README — confirm the exact header/scheme with Mesaj; without this set, webhook auth is skipped entirely, which is NOT safe for production)",
   },
   { name: "PAYSTACK_SECRET_KEY", usedFor: "Paystack webhook verification + wallet funding (top-ups will fail)" },
+  {
+    name: "SUPABASE_SERVICE_ROLE_KEY",
+    usedFor:
+      "uploading and reading CAC documents in the private cac-documents Storage bucket (see lib/supabase/admin.ts) — without it, Sender ID requests will fail to submit and admins won't be able to view/download any that did get through",
+  },
   { name: "NEXT_PUBLIC_APP_URL", usedFor: "Paystack callback_url after wallet top-up; also the base URL the campaign-send background chain calls back into itself (see lib/campaignSendProcessor.ts) — without it, campaign approval will claim the campaign but the send chain won't start" },
   {
     name: "CRON_SECRET",

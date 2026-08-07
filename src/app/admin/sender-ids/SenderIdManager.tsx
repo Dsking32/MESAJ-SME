@@ -7,7 +7,7 @@ import { Badge, statusTone } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Field";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { BadgeCheck, Building2, ChevronRight } from "lucide-react";
+import { BadgeCheck, Building2, ChevronRight, FileText } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
 import { formatDate } from "@/lib/formatDate";
 
@@ -21,6 +21,7 @@ interface SenderIdRow {
   requestedName: string;
   createdAt: string;
   tenant: { id: string; businessName: string };
+  hasCacDocument: boolean;
   carrierStatuses: CarrierStatus[];
 }
 
@@ -96,6 +97,22 @@ export default function SenderIdManager({ senderIds: initial }: { senderIds: Sen
                   </Badge>
                 </div>
                 <p className="mt-1 text-xs text-[var(--color-ink-400)]">Requested {formatDate(s.createdAt)}</p>
+                {s.hasCacDocument ? (
+                  <a
+                    href={`/api/admin/sender-id/${s.id}/cac-document`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-brand-700)] hover:underline"
+                  >
+                    <FileText className="size-3.5" aria-hidden />
+                    View CAC document
+                  </a>
+                ) : (
+                  <p className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-[var(--color-ink-400)]">
+                    <FileText className="size-3.5" aria-hidden />
+                    No CAC document on file
+                  </p>
+                )}
               </div>
               <Link
                 href={`/admin/clients/${s.tenant.id}`}
