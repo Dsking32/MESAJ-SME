@@ -3,8 +3,8 @@ import { NextRequest } from "next/server";
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    user: { findUnique: vi.fn(), upsert: vi.fn() },
-    tenant: { create: vi.fn() },
+    user: { findUnique: vi.fn(), findUniqueOrThrow: vi.fn(), create: vi.fn(), updateMany: vi.fn() },
+    tenant: { create: vi.fn(), delete: vi.fn() },
   },
 }));
 vi.mock("@/lib/supabase/server", () => ({
@@ -54,7 +54,10 @@ beforeEach(() => {
   mockedCheckRateLimit.mockResolvedValue({ allowed: true, limit: 5, remaining: 4, resetAt: new Date() });
   mockedPrisma.user.findUnique.mockResolvedValue(null); // no existing user/tenant yet
   mockedPrisma.tenant.create.mockResolvedValue({ id: "tenant-1", businessName: "Venix Partners Ltd" } as never);
-  mockedPrisma.user.upsert.mockResolvedValue({ id: "user-1", tenantId: "tenant-1", role: "CLIENT" } as never);
+  mockedPrisma.tenant.delete.mockResolvedValue({} as never);
+  mockedPrisma.user.create.mockResolvedValue({ id: "user-1", tenantId: "tenant-1", role: "CLIENT" } as never);
+  mockedPrisma.user.updateMany.mockResolvedValue({ count: 1 });
+  mockedPrisma.user.findUniqueOrThrow.mockResolvedValue({ id: "user-1", tenantId: "tenant-1", role: "CLIENT" } as never);
 });
 
 describe("POST /api/onboarding — access control", () => {
@@ -100,17 +103,48 @@ describe("POST /api/onboarding — already-onboarded guard", () => {
     expect(mockedPrisma.tenant.create).not.toHaveBeenCalled();
   });
 
-  it("KNOWN GAP (documented, not fixed): this check-then-create isn't atomic, so two concurrent onboarding submissions for the same brand-new user can both pass it and both create a Tenant — same category of race as the admin-send fix earlier in this codebase's history, just far lower-stakes here (an orphaned empty Tenant row, not a duplicate paid SMS send). Low priority: needs a literal double-submit of a one-time first-login form to trigger.", async () => {
-    // This test documents CURRENT behavior (two creates happen), not a
-    // guarantee — if this route is later hardened with the same
-    // guarded-transaction pattern used elsewhere, this test should be
-    // updated to assert the second attempt is rejected/deduped instead.
-    mockedPrisma.user.findUnique.mockResolvedValue(null); // both "concurrent" calls see no existing tenant
+  it("FIXED — race path 1 (no User row yet): the loser's create() hits the unique authUserId constraint, deletes its own orphan Tenant, and returns 409 instead of leaving a duplicate Tenant behind", async () => {
+    mockedPrisma.user.findUnique.mockResolvedValue(null); // neither request sees an existing row
+    mockedPrisma.user.create.mockRejectedValue(
+      Object.assign(new Error("Unique constraint failed"), { code: "P2002" })
+    );
 
-    await callRoute(VALID_BODY);
-    await callRoute(VALID_BODY);
+    const res = await callRoute(VALID_BODY);
+    const json = await res.json();
 
-    expect(mockedPrisma.tenant.create).toHaveBeenCalledTimes(2);
+    expect(res.status).toBe(409);
+    expect(json.error).toMatch(/already completed/i);
+    // The critical assertion: the Tenant this request created gets cleaned
+    // up, not left orphaned.
+    expect(mockedPrisma.tenant.delete).toHaveBeenCalledWith({ where: { id: "tenant-1" } });
+  });
+
+  it("FIXED — race path 2 (a User row already exists without a tenant): the loser's guarded updateMany matches zero rows, deletes its own orphan Tenant, and returns 409", async () => {
+    mockedPrisma.user.findUnique.mockResolvedValue({ id: "user-1", tenantId: null } as never);
+    mockedPrisma.user.updateMany.mockResolvedValue({ count: 0 }); // another request already claimed it
+
+    const res = await callRoute(VALID_BODY);
+    const json = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(json.error).toMatch(/already completed/i);
+    expect(mockedPrisma.user.updateMany).toHaveBeenCalledWith({
+      where: { authUserId: "auth-user-1", tenantId: null },
+      data: { tenantId: "tenant-1" },
+    });
+    expect(mockedPrisma.tenant.delete).toHaveBeenCalledWith({ where: { id: "tenant-1" } });
+  });
+
+  it("the winner of race path 2 does NOT delete its tenant, and returns the now-linked user", async () => {
+    mockedPrisma.user.findUnique.mockResolvedValue({ id: "user-1", tenantId: null } as never);
+    mockedPrisma.user.updateMany.mockResolvedValue({ count: 1 }); // this request won the claim
+
+    const res = await callRoute(VALID_BODY);
+    const json = await res.json();
+
+    expect(res.status).toBe(201);
+    expect(mockedPrisma.tenant.delete).not.toHaveBeenCalled();
+    expect(json.user.tenantId).toBe("tenant-1");
   });
 });
 
@@ -126,7 +160,7 @@ describe("POST /api/onboarding — validation", () => {
   });
 });
 
-describe("POST /api/onboarding — success path", () => {
+describe("POST /api/onboarding — success path (no existing User row — the common case)", () => {
   it("creates the tenant with contactEmail from the auth session (not client-supplied)", async () => {
     mockAuthedUser("verified-owner@example.test");
 
@@ -139,14 +173,12 @@ describe("POST /api/onboarding — success path", () => {
     );
   });
 
-  it("upserts the User row linked to this tenant with role CLIENT", async () => {
+  it("creates the User row linked to this tenant with role CLIENT, guarded by the unique authUserId constraint", async () => {
     await callRoute(VALID_BODY);
 
-    expect(mockedPrisma.user.upsert).toHaveBeenCalledWith(
+    expect(mockedPrisma.user.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { authUserId: "auth-user-1" },
-        create: expect.objectContaining({ authUserId: "auth-user-1", role: "CLIENT", tenantId: "tenant-1" }),
-        update: { tenantId: "tenant-1" },
+        data: { authUserId: "auth-user-1", email: "biz@example.test", role: "CLIENT", tenantId: "tenant-1" },
       })
     );
   });
