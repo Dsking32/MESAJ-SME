@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import * as Sentry from "@sentry/nextjs";
+import crypto from "crypto";
 import { prisma } from "@/lib/prisma";
 
 /**
@@ -69,18 +70,31 @@ function toDeliveryStatus(status: string): "DELIVERED" | "FAILED" | "EXPIRED" | 
 
 export async function POST(req: NextRequest) {
   // Mesaj doesn't support a signing scheme or custom headers — it just POSTs
-  // directly to whatever URL is configured on their side. So the secret has
-  // to live IN the URL itself (query string), since that's the only thing
-  // guaranteed to come back on every request. The webhook URL configured in
-  // Mesaj's dashboard must be:
+  // directly to whatever URL is configured on their side (confirmed:
+  // Mesaj's platform only lets an integrator register a callback URL, no
+  // signing option exists to eventually adopt). So the secret has to live
+  // IN the URL itself (query string), since that's the only thing
+  // guaranteed to come back on every request. The webhook URL configured
+  // in Mesaj's dashboard must be:
   //   https://<your-domain>/api/mesaj/webhook?secret=<MESAJ_WEBHOOK_SECRET>
   // Weaker than HMAC signing, but far better than an open endpoint — anyone
-  // who doesn't know the secret can't hit this meaningfully. If Mesaj adds
-  // real signing support later, prefer that over this.
+  // who doesn't know the secret can't hit this meaningfully. Since this is
+  // confirmed permanent (not a stopgap awaiting a future signing scheme),
+  // the comparison below is timing-safe — same reasoning as the Paystack
+  // webhook's signature check and the internal cron secret: a plain `!==`
+  // returns as soon as it finds a mismatched byte, leaking how many
+  // leading characters of a guess were correct via response-time
+  // differences. In practice this secret's entropy already makes brute
+  // force infeasible regardless, but there's no reason not to close this
+  // too now that it's not going away.
   const configuredSecret = process.env.MESAJ_WEBHOOK_SECRET;
   if (configuredSecret) {
-    const provided = req.nextUrl.searchParams.get("secret");
-    if (provided !== configuredSecret) {
+    const provided = req.nextUrl.searchParams.get("secret") ?? "";
+    const providedBuffer = Buffer.from(provided, "utf8");
+    const expectedBuffer = Buffer.from(configuredSecret, "utf8");
+    const valid =
+      providedBuffer.length === expectedBuffer.length && crypto.timingSafeEqual(providedBuffer, expectedBuffer);
+    if (!valid) {
       return NextResponse.json({ error: "Invalid webhook credentials" }, { status: 401 });
     }
   } else if (process.env.NODE_ENV === "production") {

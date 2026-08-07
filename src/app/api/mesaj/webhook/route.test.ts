@@ -90,6 +90,14 @@ describe("POST /api/mesaj/webhook — auth", () => {
     expect(res.status).toBe(401);
   });
 
+  it("rejects with 401 for a same-length wrong guess (exercises the timingSafeEqual path, not just the length-mismatch fast path)", async () => {
+    // "test-secret" is 11 chars; this guess is also 11 chars, differing
+    // only in the last character — the length-mismatch fast path can't
+    // short-circuit this one, so it actually calls timingSafeEqual.
+    const res = await POST(webhookRequest(payload(), "?secret=test-secre1"));
+    expect(res.status).toBe(401);
+  });
+
   it("accepts when the secret query param matches", async () => {
     mockedPrisma.messageRecipient.findUnique.mockResolvedValue(PENDING_ROW as never);
     const res = await POST(webhookRequest(payload(), "?secret=test-secret"));
