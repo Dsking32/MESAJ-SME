@@ -20,9 +20,9 @@
 -- column stays nullable in the DB so historical rows aren't broken by a
 -- NOT NULL constraint they can never satisfy.
 
-ALTER TABLE "SenderId" ADD COLUMN "cacDocumentPath" TEXT;
-ALTER TABLE "SenderId" ADD COLUMN "cacDocumentContentType" TEXT;
-ALTER TABLE "SenderId" ADD COLUMN "cacDocumentUploadedAt" TIMESTAMP(3);
+ALTER TABLE "SenderId" ADD COLUMN IF NOT EXISTS "cacDocumentPath" TEXT;
+ALTER TABLE "SenderId" ADD COLUMN IF NOT EXISTS "cacDocumentContentType" TEXT;
+ALTER TABLE "SenderId" ADD COLUMN IF NOT EXISTS "cacDocumentUploadedAt" TIMESTAMP(3);
 
 -- === Storage bucket =========================================================
 -- Supabase Storage buckets are just rows in storage.buckets — creating one
@@ -37,6 +37,21 @@ ALTER TABLE "SenderId" ADD COLUMN "cacDocumentUploadedAt" TIMESTAMP(3);
 -- server-side in the sender-id/request route using the service role key,
 -- never directly from the browser, so there's no legitimate anon/
 -- authenticated access pattern to write a policy for.
-INSERT INTO storage.buckets (id, name, public)
-VALUES ('cac-documents', 'cac-documents', false)
-ON CONFLICT (id) DO NOTHING;
+--
+-- Guarded behind an existence check because storage.buckets only exists
+-- on real Supabase-managed Postgres, not on a vanilla Postgres instance
+-- (e.g. CI's postgres:16 Docker container, or a local `docker run
+-- postgres` for testing) — this keeps the migration a harmless no-op
+-- there instead of failing the whole migration on an unrelated table
+-- that was never going to exist outside Supabase.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'storage' AND table_name = 'buckets'
+  ) THEN
+    INSERT INTO storage.buckets (id, name, public)
+    VALUES ('cac-documents', 'cac-documents', false)
+    ON CONFLICT (id) DO NOTHING;
+  END IF;
+END $$;
