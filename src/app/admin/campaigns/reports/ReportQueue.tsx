@@ -8,7 +8,7 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { FileCheck, Building2, ChevronRight } from "lucide-react";
+import { FileCheck, Building2, ChevronRight, Download } from "lucide-react";
 import { useToast } from "@/components/ui/Toast";
 
 interface Counts {
@@ -99,6 +99,13 @@ export default function ReportQueue({ campaigns: initial }: { campaigns: Campaig
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-2">
+              <a
+                href={`/api/admin/campaigns/${c.id}/report.csv`}
+                className="inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--color-admin-border)] px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-white/5"
+              >
+                <Download className="size-3.5" aria-hidden />
+                Download report
+              </a>
               <Button variant="admin" onClick={() => handleApprove(c.id)} loading={busyId === c.id}>
                 Approve report
               </Button>
