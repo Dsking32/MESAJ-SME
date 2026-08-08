@@ -173,3 +173,36 @@ jobs:
             --to-schema ./prisma/schema.prisma \
             --exit-code || \
           (echo "::error::schema.prisma has changes not captured in prisma/migrations — run 'npx prisma migrate dev' and commit the result." && exit 1)
+
+  # Applies pending migrations to production right after a push to main
+  # passes every check above. Prevents code that depends on a schema
+  # change from ever being live before the schema change itself is.
+  # Requires a GitHub Actions secret named PRODUCTION_DATABASE_URL,
+  # set to the SAME connection string used for `npx prisma migrate deploy`
+  # locally (the direct/session connection on port 5432, not the pgbouncer
+  # pooler on 6543 — migrate deploy needs an advisory lock that
+  # transaction-pooling mode doesn't support).
+  deploy-migrations:
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - typecheck
+      - test
+      - build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Deploy pending migrations to production
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: npx prisma migrate deploy
