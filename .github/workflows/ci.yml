@@ -94,6 +94,31 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Stub the Supabase auth schema
+        # The enable_row_level_security migration references auth.uid() in
+        # a SECURITY DEFINER function body — Postgres parses and validates
+        # LANGUAGE sql function bodies at CREATE FUNCTION time (unlike
+        # plpgsql, which mostly defers to invocation), so auth.uid() has to
+        # actually exist for the migration to apply at all, even though
+        # nothing in these tests calls it meaningfully.
+        #
+        # auth.uid() only exists on real Supabase, created by their Auth
+        # service's own migrations — not something the plain postgres:16
+        # image here has, and running the full Supabase stack just for
+        # this would mean Docker-in-Docker for no real benefit: this app's
+        # own DATABASE_URL connection already bypasses RLS the same way
+        # the service role does (RLS here is defense-in-depth, not the
+        # enforcement boundary — see the enable_row_level_security
+        # migration's own comments), so these tests were never exercising
+        # real RLS/auth.uid() behavior anyway. Actual RLS behavior against
+        # a real anon/authenticated connection is validated separately by
+        # the verify-rls script against the real Supabase project — this
+        # stub only needs to be enough for the migration to *apply*.
+        run: |
+          psql "$DATABASE_URL" -c "
+            CREATE SCHEMA IF NOT EXISTS auth;
+            CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS \$\$ SELECT NULL::uuid \$\$;
+          "
       - name: Apply real migrations to the test database
         run: npx prisma migrate deploy
       - run: npm run test:integration
@@ -127,6 +152,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx prisma validate
+      - name: Stub the Supabase auth schema in the shadow database
+        # Same reasoning as the integration-test job: migrate diff replays
+        # every migration (including enable_row_level_security, which
+        # references auth.uid()) into the shadow database to compute the
+        # diff, so it needs the same stub.
+        env:
+          SHADOW_DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci_shadow"
+        run: |
+          psql "$SHADOW_DATABASE_URL" -c "
+            CREATE SCHEMA IF NOT EXISTS auth;
+            CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS \$\$ SELECT NULL::uuid \$\$;
+          "
       - name: Check for schema drift not captured by a migration
         env:
           SHADOW_DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci_shadow"
@@ -134,6 +171,5 @@ jobs:
           npx prisma migrate diff \
             --from-migrations ./prisma/migrations \
             --to-schema-datamodel ./prisma/schema.prisma \
-            --shadow-database-url "$SHADOW_DATABASE_URL" \
             --exit-code || \
           (echo "::error::schema.prisma has changes not captured in prisma/migrations — run 'npx prisma migrate dev' and commit the result." && exit 1)
